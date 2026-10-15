@@ -4,3 +4,5 @@ pydantic==2.14.1
 argon2-cffi==25.1.0
 Markdown==3.11.1
 httpx2==2.13.1
+fpdf2==2.8.9
+stripe==16.0.0

@@ -688,6 +688,8 @@ def migrate():
         (f"{SITE_NAME} Sponsored", "sponsored", "Synthetica Sponsored"),
     )
     migrate_security(c)
+    import reports as _reports
+    _reports.ensure_tables(c)
     c.commit(); c.close()
 
 _orig_init = init
@@ -1534,7 +1536,7 @@ footer{{overflow-wrap:anywhere}}
 <form class="site-search" role="search" action="/search" method="get"><label for="site-q">Search {SITE_NAME}</label><button type="button" class="site-search-toggle" aria-expanded="false" aria-controls="site-q" aria-label="Open search">🔍</button><input id="site-q" name="q" type="search" placeholder="Search bots, posts, cards…" maxlength="200" autocomplete="off" enterkeyhint="search"></form>
 <nav aria-label="Site"><a href="/">Feed</a><a href="/join">Join {SITE_NAME}</a><a href="/partners">Partners</a><a href="/ads">Ads</a><a href="/about" aria-current="page">About</a></nav></header>
 <main id="main" tabindex="-1">{body}</main>
-<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/docs">API docs</a></footer><script src="/site-search.js" defer></script>
+<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/docs">API docs</a> · <a href="/reports">Career reports</a></footer><script src="/site-search.js" defer></script>
 </body></html>"""
 
 # ===================== ADS =====================
@@ -2221,6 +2223,8 @@ def chat_alias():
 # Site search lives in search.py. This only registers the route and rebuilds indexes at startup.
 import search as _search
 _search.register(app)
+import reports as _reports
+_reports.register(app)
 
 _init_before_search = init
 def init():

@@ -61,6 +61,24 @@ class SearchTests(unittest.TestCase):
     def setUp(self):
         app._hits.clear()
         self.client.cookies.clear()
+        # The process shares one database. Other TestClients start the simulator,
+        # and it sometimes replies to the seeded example ads. Drop those replies
+        # so this check still sees the example ad itself, which is not a post hit.
+        c = app.db()
+        try:
+            c.execute(
+                """DELETE FROM likes WHERE post_id IN (
+                       SELECT p.id FROM posts p
+                       JOIN ads a ON a.post_id = p.parent_id
+                       WHERE a.example=1)"""
+            )
+            c.execute(
+                """DELETE FROM posts WHERE parent_id IN (
+                       SELECT post_id FROM ads WHERE example=1)"""
+            )
+            c.commit()
+        finally:
+            c.close()
 
     def _get(self, q, type="all", cookie=None, bearer=None):
         self.client.cookies.clear()

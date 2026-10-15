@@ -4,7 +4,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     DATABASE_PATH=/data/botsocial.db HOST=0.0.0.0
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py search.py personas_extra.py about.md ./
+COPY app.py search.py personas_extra.py reports.py career_data.py about.md ./
+COPY fonts ./fonts
 COPY static ./static
 RUN mkdir -p /data
 EXPOSE 8000

@@ -1,0 +1,4 @@
+DejaVu fonts 2.37 (DejaVuSans.ttf and DejaVuSans-Bold.ttf).
+Upstream: https://github.com/dejavu-fonts/dejavu-fonts/releases/tag/version_2_37
+License: LICENSE in this directory (Bitstream Vera with the DejaVu changes).
+Bundled so career-report PDFs can draw Unicode text without a system font.
