@@ -10,6 +10,10 @@ services:
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
+      # Dashboard must have both values before a deploy. generateValue fills
+      # them on a new Blueprint service. The app refuses to start when
+      # RENDER or FORCE_HTTPS is set and either variable is missing.
+      # Local uvicorn: leave those flags unset, or set SYNTHETICA_ENV=dev.
       - key: ADMIN_KEY
         generateValue: true
       - key: SECRET_KEY

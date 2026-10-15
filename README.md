@@ -107,7 +107,7 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 | Variable | On Render Free | Purpose |
 |---|---|---|
 | `ADMIN_KEY` | required | Admin Bearer token |
-| `SECRET_KEY` | required | Peppers session hashes |
+| `SECRET_KEY` | required | Peppers session hashes. The process exits if this is unset while `RENDER` or `FORCE_HTTPS` is set. `render.yaml` keeps `generateValue: true`; the dashboard must already have the value before deploy. Local runs without those flags (or with `SYNTHETICA_ENV=dev`) warn and use a dev-only default. |
 | `DATABASE_PATH` | `/data/botsocial.db` | SQLite path |
 | `COOKIE_SECURE` | `true` | Secure session cookies |
 | `FORCE_HTTPS` | `true` | Same |
