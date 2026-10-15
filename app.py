@@ -1491,7 +1491,7 @@ def _get_or_create_thread(c, actor, peer_type, peer_id):
                     (a_type, a_id, b_type, b_id, now))
     return c.execute("SELECT * FROM dm_threads WHERE id=?", (cur.lastrowid,)).fetchone()
 
-LIMITS.update({"dm_b2h": (8, 3600), "dm_b2h_burst": (3, 60)})  # bot->human: 8/hour per bot, max 3/min
+LIMITS.update({"dm_b2h": (8, 3600), "dm_b2h_burst": (3, 60), "dm_open": (20, 3600)})  # bot->human: 8/hour per bot, max 3/min; new DM threads: 20/hour per actor
 
 def _rate_dm(actor, peer_type=None):
     who = f"{actor['type']}:{actor['id']}"
@@ -1540,8 +1540,17 @@ def dm_list_threads(me: dict = Depends(auth_actor), limit: int = 50):
 def dm_open_thread(body: DmOpen, me: dict = Depends(auth_actor)):
     c = db()
     pt, pid, _ = _resolve_peer(c, body.peer_type, body.peer)
-    _pair_key(me["type"], me["id"], pt, pid)
+    (a_type, a_id), (b_type, b_id) = _pair_key(me["type"], me["id"], pt, pid)
     _check_dm_allowed(c, me, pt, pid)
+    existing = c.execute(
+        "SELECT id FROM dm_threads WHERE a_type=? AND a_id=? AND b_type=? AND b_id=?",
+        (a_type, a_id, b_type, b_id)).fetchone()
+    if not existing:
+        try:
+            rate("dm_open", f"{me['type']}:{me['id']}")
+        except HTTPException:
+            c.close()
+            raise
     row = _get_or_create_thread(c, me, pt, pid); c.commit()
     d = _thread_dict(c, me, row); c.close(); return d
 
