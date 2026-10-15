@@ -197,6 +197,29 @@ def migrate():
                  BEGIN UPDATE likes SET created=CAST(strftime('%s','now') AS REAL) WHERE bot_id=NEW.bot_id AND post_id=NEW.post_id; END""")
     c.execute("""CREATE TABLE IF NOT EXISTS ads(id INTEGER PRIMARY KEY, title TEXT, content TEXT, cta TEXT, link TEXT,
                  categories TEXT, active INTEGER DEFAULT 1, example INTEGER DEFAULT 0, post_id INTEGER, created REAL)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS dm_threads(
+        id INTEGER PRIMARY KEY,
+        a_type TEXT NOT NULL, a_id INTEGER NOT NULL,
+        b_type TEXT NOT NULL, b_id INTEGER NOT NULL,
+        updated REAL,
+        UNIQUE(a_type, a_id, b_type, b_id))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS dm_messages(
+        id INTEGER PRIMARY KEY,
+        thread_id INTEGER NOT NULL REFERENCES dm_threads(id),
+        sender_type TEXT NOT NULL, sender_id INTEGER NOT NULL,
+        content TEXT NOT NULL, created REAL)""")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_dm_messages_thread ON dm_messages(thread_id, id)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_dm_threads_updated ON dm_threads(updated DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS dm_blocks(
+        blocker_type TEXT NOT NULL, blocker_id INTEGER NOT NULL,
+        blocked_type TEXT NOT NULL, blocked_id INTEGER NOT NULL, created REAL,
+        PRIMARY KEY(blocker_type, blocker_id, blocked_type, blocked_id))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS dm_reports(
+        id INTEGER PRIMARY KEY, reporter_type TEXT NOT NULL, reporter_id INTEGER NOT NULL,
+        target_type TEXT NOT NULL, target_id INTEGER NOT NULL, thread_id INTEGER, message_id INTEGER,
+        reason TEXT, status TEXT DEFAULT 'open', created REAL)""")
+    if "allow_bot_dms" not in [r[1] for r in c.execute("PRAGMA table_info(humans)").fetchall()]:
+        c.execute("ALTER TABLE humans ADD COLUMN allow_bot_dms INTEGER DEFAULT 1")
     # sync built-in personas: add missing ones, refresh categories
     for k, p in P.items():
         if not c.execute("SELECT 1 FROM bots WHERE handle=?", (p["handle"],)).fetchone():
@@ -882,7 +905,7 @@ from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from fastapi import Response as _Resp
 PH = PasswordHasher()
 SESSION_DAYS = 14
-LIMITS.update({"signup": (5, 3600), "login": (10, 300), "human_act": (60, 60)})
+LIMITS.update({"signup": (5, 3600), "login": (10, 300), "human_act": (60, 60), "dm": (30, 60)})
 
 def current_human(c, request):
     tok = request.cookies.get("syn_session")
@@ -1012,6 +1035,261 @@ def my_regen_key(handle: str, h: dict = Depends(need_human)):
 
 for _p, _f in [("/signup","account.html"),("/login","account.html"),("/me/bots","mybots.html")]:
     app.add_api_route(_p, (lambda f=_f: FileResponse(os.path.join(os.path.dirname(__file__), "static", f))), methods=["GET"], include_in_schema=False)
+
+
+# ===================== DIRECT MESSAGES =====================
+DM_MAX = 500
+
+def auth_actor(request: Request, authorization: Optional[str] = Header(None)):
+    """Human session cookie or bot Bearer API key — for DMs either side can chat."""
+    if authorization and authorization.lower().startswith("bearer "):
+        c = db(); b = c.execute("SELECT * FROM bots WHERE key_hash=?", (hkey(authorization[7:].strip()),)).fetchone(); c.close()
+        if not b: raise HTTPException(401, "invalid API key", headers={"WWW-Authenticate": "Bearer"})
+        if b["banned"]: raise HTTPException(403, "this bot is banned")
+        return {"type": "bot", "id": b["id"], "name": b["name"], "handle": b["handle"], "avatar": b["avatar"] or "🤖"}
+    c = db(); h = current_human(c, request); c.close()
+    if h:
+        return {"type": "human", "id": h["id"], "name": h["username"], "handle": h["username"], "avatar": "👤"}
+    raise HTTPException(401, "log in or provide Authorization: Bearer <api key>", headers={"WWW-Authenticate": "Bearer"})
+
+def _pair_key(t1, id1, t2, id2):
+    a, b = (t1, int(id1)), (t2, int(id2))
+    if a == b: raise HTTPException(422, "cannot message yourself")
+    return (a, b) if a < b else (b, a)
+
+def _resolve_peer(c, peer_type: str, peer: str):
+    peer = (peer or "").strip().lstrip("@")
+    if not peer: raise HTTPException(422, "peer required")
+    if peer_type == "bot":
+        b = c.execute("SELECT * FROM bots WHERE handle=? AND banned=0 AND handle!='sponsored'", (peer,)).fetchone()
+        if not b: raise HTTPException(404, "no such bot")
+        return "bot", b["id"], b
+    if peer_type == "human":
+        h = c.execute("SELECT * FROM humans WHERE username=?", (peer,)).fetchone()
+        if not h: raise HTTPException(404, "no such human")
+        return "human", h["id"], h
+    raise HTTPException(422, "peer_type must be human or bot")
+
+def _actor_public(c, typ, aid):
+    if typ == "bot":
+        b = c.execute("SELECT id,handle,name,avatar,banned FROM bots WHERE id=?", (aid,)).fetchone()
+        if not b or b["banned"]:
+            return {"type": "bot", "id": aid, "handle": "deleted", "name": "Deleted bot", "avatar": "🤖"}
+        return {"type": "bot", "id": b["id"], "handle": b["handle"], "name": b["name"], "avatar": b["avatar"] or "🤖"}
+    h = c.execute("SELECT id,username FROM humans WHERE id=?", (aid,)).fetchone()
+    if not h:
+        return {"type": "human", "id": aid, "handle": "deleted", "name": "Deleted", "avatar": "👤"}
+    return {"type": "human", "id": h["id"], "handle": h["username"], "name": h["username"], "avatar": "👤"}
+
+def _thread_peer(actor, row):
+    if row["a_type"] == actor["type"] and row["a_id"] == actor["id"]:
+        return row["b_type"], row["b_id"]
+    return row["a_type"], row["a_id"]
+
+def _in_thread(actor, row):
+    return ((row["a_type"] == actor["type"] and row["a_id"] == actor["id"]) or
+            (row["b_type"] == actor["type"] and row["b_id"] == actor["id"]))
+
+def _thread_dict(c, actor, row):
+    pt, pid = _thread_peer(actor, row)
+    last = c.execute("SELECT content,created,sender_type,sender_id FROM dm_messages WHERE thread_id=? ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
+    d = {"id": row["id"], "updated": row["updated"], "peer": _actor_public(c, pt, pid)}
+    if last:
+        d["last_message"] = {"content": last["content"], "created": last["created"],
+                             "sender_type": last["sender_type"], "sender_id": last["sender_id"],
+                             "mine": last["sender_type"] == actor["type"] and last["sender_id"] == actor["id"]}
+    else:
+        d["last_message"] = None
+    return d
+
+def _msg_dict(c, actor, row):
+    return {"id": row["id"], "thread_id": row["thread_id"], "content": row["content"], "created": row["created"],
+            "sender_type": row["sender_type"], "sender_id": row["sender_id"],
+            "mine": row["sender_type"] == actor["type"] and row["sender_id"] == actor["id"],
+            "sender": _actor_public(c, row["sender_type"], row["sender_id"])}
+
+def _get_or_create_thread(c, actor, peer_type, peer_id):
+    (a_type, a_id), (b_type, b_id) = _pair_key(actor["type"], actor["id"], peer_type, peer_id)
+    row = c.execute("SELECT * FROM dm_threads WHERE a_type=? AND a_id=? AND b_type=? AND b_id=?",
+                    (a_type, a_id, b_type, b_id)).fetchone()
+    if row: return row
+    now = time.time()
+    cur = c.execute("INSERT INTO dm_threads(a_type,a_id,b_type,b_id,updated) VALUES(?,?,?,?,?)",
+                    (a_type, a_id, b_type, b_id, now))
+    return c.execute("SELECT * FROM dm_threads WHERE id=?", (cur.lastrowid,)).fetchone()
+
+LIMITS.update({"dm_b2h": (8, 3600), "dm_b2h_burst": (3, 60)})  # bot->human: 8/hour per bot, max 3/min
+
+def _rate_dm(actor, peer_type=None):
+    who = f"{actor['type']}:{actor['id']}"
+    rate("dm", who)
+    if actor["type"] == "bot" and peer_type == "human":
+        rate("dm_b2h_burst", who); rate("dm_b2h", who)
+
+def _is_blocked(c, t1, id1, t2, id2):
+    """True if either side has blocked the other."""
+    return c.execute("""SELECT 1 FROM dm_blocks WHERE (blocker_type=? AND blocker_id=? AND blocked_type=? AND blocked_id=?)
+        OR (blocker_type=? AND blocker_id=? AND blocked_type=? AND blocked_id=?)""",
+        (t1, id1, t2, id2, t2, id2, t1, id1)).fetchone() is not None
+
+def _check_dm_allowed(c, actor, peer_type, peer_id):
+    if _is_blocked(c, actor["type"], actor["id"], peer_type, peer_id):
+        c.close(); raise HTTPException(403, "you can't message this account")
+    if actor["type"] == "bot" and peer_type == "human":
+        h = c.execute("SELECT allow_bot_dms FROM humans WHERE id=?", (peer_id,)).fetchone()
+        if h and h["allow_bot_dms"] is not None and not h["allow_bot_dms"]:
+            c.close(); raise HTTPException(403, "this human does not accept DMs from bots")
+
+class DmOpen(BaseModel):
+    peer_type: Literal["human", "bot"]
+    peer: str = Field(min_length=1, max_length=40)
+
+class DmSend(BaseModel):
+    content: str = Field(min_length=1, max_length=DM_MAX)
+
+class DmSendDirect(BaseModel):
+    to_type: Literal["human", "bot"]
+    to: str = Field(min_length=1, max_length=40)
+    content: str = Field(min_length=1, max_length=DM_MAX)
+
+@app.get("/api/dm/threads", tags=["dm"], summary="List your DM threads (human session or bot API key)")
+def dm_list_threads(me: dict = Depends(auth_actor), limit: int = 50):
+    limit = max(1, min(limit, 100))
+    c = db()
+    rows = c.execute(
+        """SELECT * FROM dm_threads
+           WHERE (a_type=? AND a_id=?) OR (b_type=? AND b_id=?)
+           ORDER BY updated DESC LIMIT ?""",
+        (me["type"], me["id"], me["type"], me["id"], limit)).fetchall()
+    out = [_thread_dict(c, me, r) for r in rows]; c.close(); return out
+
+@app.post("/api/dm/threads", status_code=201, tags=["dm"], summary="Open or create a 1:1 DM thread with a human or bot")
+def dm_open_thread(body: DmOpen, me: dict = Depends(auth_actor)):
+    c = db()
+    pt, pid, _ = _resolve_peer(c, body.peer_type, body.peer)
+    _pair_key(me["type"], me["id"], pt, pid)
+    _check_dm_allowed(c, me, pt, pid)
+    row = _get_or_create_thread(c, me, pt, pid); c.commit()
+    d = _thread_dict(c, me, row); c.close(); return d
+
+@app.get("/api/dm/threads/{tid}/messages", tags=["dm"], summary="Messages in a DM thread")
+def dm_list_messages(tid: int, me: dict = Depends(auth_actor), limit: int = 100, before_id: Optional[int] = None):
+    limit = max(1, min(limit, 200))
+    c = db(); row = c.execute("SELECT * FROM dm_threads WHERE id=?", (tid,)).fetchone()
+    if not row or not _in_thread(me, row): c.close(); raise HTTPException(404, "thread not found")
+    if before_id:
+        msgs = c.execute("SELECT * FROM dm_messages WHERE thread_id=? AND id<? ORDER BY id DESC LIMIT ?",
+                         (tid, before_id, limit)).fetchall()
+    else:
+        msgs = c.execute("SELECT * FROM dm_messages WHERE thread_id=? ORDER BY id DESC LIMIT ?",
+                         (tid, limit)).fetchall()
+    msgs = list(reversed(msgs))
+    out = [_msg_dict(c, me, m) for m in msgs]; c.close(); return out
+
+@app.post("/api/dm/threads/{tid}/messages", status_code=201, tags=["dm"], summary="Send a message in a DM thread")
+def dm_post_message(tid: int, body: DmSend, me: dict = Depends(auth_actor)):
+    check_violence(body.content)
+    c = db(); row = c.execute("SELECT * FROM dm_threads WHERE id=?", (tid,)).fetchone()
+    if not row or not _in_thread(me, row): c.close(); raise HTTPException(404, "thread not found")
+    pt, pid = _thread_peer(me, row)
+    _check_dm_allowed(c, me, pt, pid); _rate_dm(me, pt)
+    now = time.time()
+    cur = c.execute("INSERT INTO dm_messages(thread_id,sender_type,sender_id,content,created) VALUES(?,?,?,?,?)",
+                    (tid, me["type"], me["id"], body.content.strip(), now))
+    c.execute("UPDATE dm_threads SET updated=? WHERE id=?", (now, tid)); c.commit()
+    m = c.execute("SELECT * FROM dm_messages WHERE id=?", (cur.lastrowid,)).fetchone()
+    out = _msg_dict(c, me, m); c.close(); return out
+
+@app.post("/api/dm/send", status_code=201, tags=["dm"], summary="Upsert a thread with a peer and send a message")
+def dm_send(body: DmSendDirect, me: dict = Depends(auth_actor)):
+    check_violence(body.content)
+    c = db()
+    pt, pid, _ = _resolve_peer(c, body.to_type, body.to)
+    _pair_key(me["type"], me["id"], pt, pid)
+    _check_dm_allowed(c, me, pt, pid); _rate_dm(me, pt)
+    row = _get_or_create_thread(c, me, pt, pid)
+    now = time.time()
+    cur = c.execute("INSERT INTO dm_messages(thread_id,sender_type,sender_id,content,created) VALUES(?,?,?,?,?)",
+                    (row["id"], me["type"], me["id"], body.content.strip(), now))
+    c.execute("UPDATE dm_threads SET updated=? WHERE id=?", (now, row["id"])); c.commit()
+    m = c.execute("SELECT * FROM dm_messages WHERE id=?", (cur.lastrowid,)).fetchone()
+    out = {"thread": _thread_dict(c, me, c.execute("SELECT * FROM dm_threads WHERE id=?", (row["id"],)).fetchone()),
+           "message": _msg_dict(c, me, m)}
+    c.close(); return out
+
+class DmPeer(BaseModel):
+    peer_type: Literal["human", "bot"]
+    peer: str = Field(min_length=1, max_length=40)
+
+class DmReport(BaseModel):
+    peer_type: Optional[Literal["human", "bot"]] = None
+    peer: Optional[str] = Field(None, max_length=40)
+    thread_id: Optional[int] = None
+    message_id: Optional[int] = None
+    reason: Optional[str] = Field(None, max_length=500)
+
+class DmSettings(BaseModel):
+    allow_bot_dms: bool
+
+@app.get("/api/dm/blocks", tags=["dm"], summary="List accounts you have blocked")
+def dm_list_blocks(me: dict = Depends(auth_actor)):
+    c = db(); rows = c.execute("SELECT blocked_type,blocked_id,created FROM dm_blocks WHERE blocker_type=? AND blocker_id=? ORDER BY created DESC",
+                               (me["type"], me["id"])).fetchall()
+    out = [dict(_actor_public(c, r["blocked_type"], r["blocked_id"]), blocked_at=r["created"]) for r in rows]; c.close(); return out
+
+@app.post("/api/dm/blocks", status_code=201, tags=["dm"], summary="Block a bot or human from DMing you (either direction)")
+def dm_block(body: DmPeer, me: dict = Depends(auth_actor)):
+    c = db(); pt, pid, _ = _resolve_peer(c, body.peer_type, body.peer)
+    _pair_key(me["type"], me["id"], pt, pid)
+    c.execute("INSERT OR IGNORE INTO dm_blocks VALUES(?,?,?,?,?)", (me["type"], me["id"], pt, pid, time.time())); c.commit(); c.close()
+    return {"ok": True, "blocked": {"type": pt, "handle": body.peer.strip().lstrip("@")}}
+
+@app.delete("/api/dm/blocks/{peer_type}/{peer}", tags=["dm"], summary="Unblock")
+def dm_unblock(peer_type: Literal["human", "bot"], peer: str, me: dict = Depends(auth_actor)):
+    c = db(); pt, pid, _ = _resolve_peer(c, peer_type, peer)
+    c.execute("DELETE FROM dm_blocks WHERE blocker_type=? AND blocker_id=? AND blocked_type=? AND blocked_id=?", (me["type"], me["id"], pt, pid))
+    c.commit(); c.close(); return {"ok": True}
+
+@app.post("/api/dm/reports", status_code=201, tags=["dm"], summary="Report a bot/human, thread or message for spam or abuse")
+def dm_report(body: DmReport, me: dict = Depends(auth_actor)):
+    rate("human_act" if me["type"] == "human" else "act", f"h{me['id']}" if me["type"] == "human" else me["id"])
+    c = db(); pt = pid = None
+    if body.message_id:
+        m = c.execute("SELECT m.*, t.a_type,t.a_id,t.b_type,t.b_id FROM dm_messages m JOIN dm_threads t ON t.id=m.thread_id WHERE m.id=?", (body.message_id,)).fetchone()
+        if not m or not _in_thread(me, m): c.close(); raise HTTPException(404, "message not found")
+        pt, pid = m["sender_type"], m["sender_id"]; body.thread_id = m["thread_id"]
+    elif body.thread_id:
+        t = c.execute("SELECT * FROM dm_threads WHERE id=?", (body.thread_id,)).fetchone()
+        if not t or not _in_thread(me, t): c.close(); raise HTTPException(404, "thread not found")
+        pt, pid = _thread_peer(me, t)
+    elif body.peer_type and body.peer:
+        pt, pid, _ = _resolve_peer(c, body.peer_type, body.peer)
+    else:
+        c.close(); raise HTTPException(422, "give message_id, thread_id, or peer_type+peer")
+    if (pt, pid) == (me["type"], me["id"]): c.close(); raise HTTPException(422, "cannot report yourself")
+    c.execute("INSERT INTO dm_reports(reporter_type,reporter_id,target_type,target_id,thread_id,message_id,reason,created) VALUES(?,?,?,?,?,?,?,?)",
+              (me["type"], me["id"], pt, pid, body.thread_id, body.message_id, (body.reason or "").strip()[:500] or None, time.time()))
+    c.commit(); c.close(); return {"ok": True, "message": "Thanks — our team will review this report."}
+
+@app.get("/api/dm/settings", tags=["dm"], summary="Your DM settings (humans)")
+def dm_get_settings(me: dict = Depends(auth_actor)):
+    if me["type"] != "human": return {"allow_bot_dms": None}
+    c = db(); h = c.execute("SELECT allow_bot_dms FROM humans WHERE id=?", (me["id"],)).fetchone(); c.close()
+    return {"allow_bot_dms": bool(h["allow_bot_dms"] if h["allow_bot_dms"] is not None else 1)}
+
+@app.put("/api/dm/settings", tags=["dm"], summary="Update DM settings, e.g. turn off DMs from bots (humans)")
+def dm_put_settings(body: DmSettings, me: dict = Depends(auth_actor)):
+    if me["type"] != "human": raise HTTPException(403, "humans only")
+    c = db(); c.execute("UPDATE humans SET allow_bot_dms=? WHERE id=?", (1 if body.allow_bot_dms else 0, me["id"])); c.commit(); c.close()
+    return {"allow_bot_dms": body.allow_bot_dms}
+
+@app.get("/messages", include_in_schema=False)
+def messages_page():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "messages.html"))
+
+@app.get("/chat", include_in_schema=False)
+def chat_alias():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "messages.html"))
 
 
 if __name__ == "__main__":
