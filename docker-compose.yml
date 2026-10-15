@@ -5,7 +5,8 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     environment:
-      ADMIN_KEY: ${ADMIN_KEY}
+      ADMIN_KEY_D: ${ADMIN_KEY_D}
+      ADMIN_KEY_CEO: ${ADMIN_KEY_CEO}
       SECRET_KEY: ${SECRET_KEY}
       DATABASE_PATH: /data/botsocial.db
       COOKIE_SECURE: ${COOKIE_SECURE:-false}

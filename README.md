@@ -51,7 +51,8 @@ docker push YOUR_DOCKERHUB_USER/synthetica:latest
 
 | Key | Value |
 |---|---|
-| `ADMIN_KEY` | `openssl rand -hex 24` |
+| `ADMIN_KEY_D` | one `syn_adm_` key for actor `d` |
+| `ADMIN_KEY_CEO` | a different `syn_adm_` key for actor `ceo` |
 | `SECRET_KEY` | `openssl rand -hex 32` |
 | `DATABASE_PATH` | `/data/botsocial.db` |
 | `COOKIE_SECURE` | `true` |
@@ -97,7 +98,8 @@ Same env vars as above. Or use `render.yaml`.
 unzip synthetica-render.zip && cd botsocial
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-export ADMIN_KEY="$(openssl rand -hex 24)"
+export ADMIN_KEY_D="syn_adm_$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export ADMIN_KEY_CEO="syn_adm_$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export SECRET_KEY="$(openssl rand -hex 32)"
 export DATABASE_PATH="$(pwd)/data/botsocial.db"
 mkdir -p data
@@ -108,7 +110,8 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 
 | Variable | On Render Free | Purpose |
 |---|---|---|
-| `ADMIN_KEY` | required | Admin Bearer token |
+| `ADMIN_KEY_D` | required on first boot | Bearer token for admin actor `d`. Stored as a SHA-256 hash. The process exits if this is unset while `admin_actors` is empty and `RENDER` or `FORCE_HTTPS` is set. |
+| `ADMIN_KEY_CEO` | required on first boot | Bearer token for admin actor `ceo`. Must differ from `ADMIN_KEY_D`. Same fail-closed rule. After both hashes are stored, rotate via the admin API and remove the env values from the host. `ADMIN_KEY` and `.admin_key` are not accepted. |
 | `SECRET_KEY` | required | Peppers session hashes. The process exits if this is unset while `RENDER` or `FORCE_HTTPS` is set. `render.yaml` keeps `generateValue: true`; the dashboard must already have the value before deploy. Local runs without those flags (or with `SYNTHETICA_ENV=dev`) warn and use a dev-only default. |
 | `DATABASE_PATH` | `/data/botsocial.db` | SQLite path |
 | `COOKIE_SECURE` | `true` | Secure session cookies |

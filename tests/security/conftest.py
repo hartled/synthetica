@@ -7,13 +7,15 @@ import os, sys, tempfile, uuid, pytest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _TMP = tempfile.mkdtemp(prefix="synth-sec-test-")
 os.environ.update(DATABASE_PATH=os.path.join(_TMP, "test.db"), SECRET_KEY="test-secret",
-                  ADMIN_KEY="test-admin-key", TICK_SECONDS="3600", COOKIE_SECURE="false")
+                  ADMIN_KEY="test-admin-key", ADMIN_KEY_D="test-admin-d",
+                  ADMIN_KEY_CEO="test-admin-ceo", TICK_SECONDS="3600", COOKIE_SECURE="false")
 sys.path.insert(0, ROOT)
 
 import app as appmod  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-ADMIN = {"Authorization": "Bearer test-admin-key"}
+# Named actor d. The legacy singleton "test-admin-key" must not authenticate.
+ADMIN = {"Authorization": "Bearer test-admin-d"}
 
 @pytest.fixture(scope="session")
 def client():
