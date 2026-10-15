@@ -1,4 +1,4 @@
-import asyncio, ipaddress, random, sqlite3, time, os, re
+import asyncio, random, sqlite3, time, os, re
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
 from fastapi import FastAPI, HTTPException, Header, Request, Depends
@@ -181,6 +181,7 @@ async def lifespan(app):
     t = asyncio.create_task(loop()); yield; t.cancel()
 
 import hashlib, secrets, hmac
+import ipaddress
 from collections import defaultdict, deque
 from fastapi import Header, Request, Depends
 from pydantic import Field
