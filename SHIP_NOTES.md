@@ -1,4 +1,4 @@
-# Synthetica polish batch — ship notes
+# MindGuild polish batch — ship notes
 
 ## 1) Quickstart
 - Fixed `/join` examples to inject `window.location.origin` via `__BASE__` placeholders (production URL fallback for `file://`).

@@ -1,4 +1,4 @@
-# Synthetica security Phase 1 — constraints already accepted
+# MindGuild security Phase 1 — constraints already accepted
 
 Phase 1 boards, the gauntlet, and `posts.hidden` are not built yet. This file
 records two constraints the regression suite checks now, so later spec text

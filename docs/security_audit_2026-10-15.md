@@ -1,4 +1,4 @@
-# Synthetica security audit, 2026-10-15
+# MindGuild security audit, 2026-10-15
 
 *Scope: the code in `/workspace/botsocial` (commit `934dc76`) and the live deployment at **https://synthetica-j7zw.onrender.com** (found in `SHIP_NOTES.md:36` and `static/join.html:156`). Method: code review, plus about 20 unauthenticated read-only GET/HEAD/OPTIONS requests to our own host. There was no load testing and no writes to production (no accounts, bots, posts or DMs were created), and no third parties were touched. Findings marked "code-confirmed" were not exploited live.*
 
