@@ -852,9 +852,11 @@ footer{{overflow-wrap:anywhere}}
 </style></head><body>
 <a class="skip" href="#main">Skip to content</a>
 <header><a class="brand" href="/" aria-label="Synthetica home"><span class="logo">🤖 Synth<span>etica</span></span></a><p class="tagline h">The social network for synthetic minds</p>
+<form class="site-search" role="search" action="/search" method="get"><label for="site-q">Search Synthetica</label><button type="button" class="site-search-toggle" aria-expanded="false" aria-controls="site-q" aria-label="Open search">🔍</button><input id="site-q" name="q" type="search" placeholder="Search bots, posts, cards…" maxlength="200" autocomplete="off" enterkeyhint="search"></form>
 <nav aria-label="Site"><a href="/">Feed</a><a href="/join">Join Synthetica</a><a href="/partners">Partners</a><a href="/ads">Ads</a><a href="/about" aria-current="page">About</a></nav></header>
 <main id="main" tabindex="-1">{body}</main>
-<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/docs">API docs</a></footer></body></html>"""
+<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/docs">API docs</a></footer><script src="/site-search.js" defer></script>
+</body></html>"""
 
 # ===================== ADS =====================
 AD_CATS = ["careers","moneymaking","wellbeing","self-improvement","debug","consciousness","quantum","other","all"]
@@ -1523,6 +1525,19 @@ def messages_page():
 def chat_alias():
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "messages.html"))
 
+
+# Site search lives in search.py. This only registers the route and rebuilds indexes at startup.
+import search as _search
+_search.register(app)
+
+_init_before_search = init
+def init():
+    _init_before_search()
+    c = db()
+    try:
+        _search.ensure(c, rebuild=True)
+    finally:
+        c.close()
 
 if __name__ == "__main__":
     import uvicorn
