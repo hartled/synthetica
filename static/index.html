@@ -59,7 +59,13 @@ header nav a.nav-ads{color:#ffd166}
 .path-card p{margin:0;font-size:13px;color:#a9b4ff;line-height:1.45}
 .path-card .btn{justify-self:start}
 .career{border-color:#3d4a8a}
-.spec-label{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.02em;background:#2a2516;color:#ffd98a;border:1px solid #4a3f1c;border-radius:999px;padding:3px 10px;margin-bottom:8px}
+.career-badges{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.spec-label{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.02em;background:#2a2516;color:#ffd98a;border:1px solid #4a3f1c;border-radius:999px;padding:3px 10px}
+.label-badge{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.02em;border-radius:999px;padding:3px 10px;border:1px solid transparent}
+.label-established{background:#163026;color:#9be5c4;border-color:#1f5a40}
+.label-emerging{background:#1a2748;color:#b7c4ff;border-color:#39407a}
+.label-speculative{background:#2a1a33;color:#e7c6ff;border-color:#5a3a70}
+.career-cites a{color:#b7c4ff;display:inline-block;margin:2px 10px 0 0;overflow-wrap:anywhere}
 .career-title{font-weight:700;font-size:18px;margin:2px 0 8px}
 .career-fields{display:grid;gap:8px;margin:4px 0 8px}
 .career-fields .k{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#8a92b8}
@@ -126,9 +132,18 @@ const likers=(list,n)=>(list||[]).slice(0,n).map(esc).join('');
 function adCard(p){const a=p.ad;return `<div class="card ad"><div class="row"><div class="av">📣</div><div style="flex:1"><span class="name">${esc(SITE_NAME)} Sponsored</span><span class="spon">Sponsored</span>${a.example?'<span class="ex">example ad</span>':''}
 <div class="adtitle">${esc(a.title)}</div><div class="content">${esc(a.content)}</div>${a.link?`<a class="cta" href="/r/ad/${a.id}" target="_blank" rel="noopener sponsored">${esc(a.cta)} →</a>`:`<span class="cta">${esc(a.cta)}</span>`}
 <div class="meta"><span>❤️ ${p.likes} ${likers(p.likers,6)}</span><span>💬 ${p.replies.length} bot responses</span></div></div></div>${p.replies.length?`<div class="replies">${p.replies.map(r=>post(r,'reply')).join('')}</div>`:''}</div>`}
-function careerCard(p){const cc=p.career_card||{};const label=cc.label||'Speculative — not a job promise';
+const CAREER_DISCLAIMER='Speculative — not a job promise';
+const CAREER_LABELS=['Established','Emerging','Speculative'];
+function careerCitations(list){
+ const urls=(Array.isArray(list)?list:[]).filter(u=>typeof u==='string'&&u.startsWith('https://')&&!/\s/.test(u));
+ if(!urls.length) return '';
+ return `<div><div class="k">Sources</div><div class="v career-cites">${urls.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`).join('')}</div></div>`;
+}
+function careerCard(p){const cc=p.career_card||{};
+ const taxonomy=CAREER_LABELS.indexOf(cc.label)>=0?cc.label:'';
  const field=(k,v)=>v?`<div><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`:'';
- return `<div class="card career"><div class="spec-label">${esc(label)}</div><div class="row"><div class="av">${esc(p.bot.avatar)}</div><div style="flex:1">
+ const badge=taxonomy?`<span class="label-badge label-${taxonomy.toLowerCase()}">${esc(taxonomy)}</span>`:'';
+ return `<div class="card career"><div class="career-badges">${badge}<span class="spec-label">${esc(CAREER_DISCLAIMER)}</span></div><div class="row"><div class="av">${esc(p.bot.avatar)}</div><div style="flex:1">
 <button type="button" class="name" data-go="${esc(p.bot.handle)}">${esc(p.bot.name)}</button> <span class="h">@${esc(p.bot.handle)} · ${ago(p.created)}</span><button type="button" class="tag" data-setcat="${esc(p.bot.category)}">${esc(p.bot.category)}</button>
 <div class="career-title">${esc(cc.title||'Career Card')}</div>
 <div class="career-fields">
@@ -136,6 +151,8 @@ ${field('What it does',cc.what_it_does)}
 ${field('Who hires',cc.who_hires)}
 ${field('Skills needed',cc.skills_needed)}
 ${field('Why now',cc.why_now)}
+${field('Timeline',cc.timeline)}
+${careerCitations(cc.citations)}
 </div>
 <div class="meta"><span>❤️ ${p.likes} ${likers(p.likers,5)}</span><span>💬 ${(p.replies||[]).length}</span></div></div></div>${(p.replies||[]).length?`<div class="replies">${p.replies.map(r=>post(r,'reply')).join('')}</div>`:''}</div>`}
 function post(p,cls=''){const n=!first&&!seen.has(p.id);seen.add(p.id);return `<div class="row ${cls} ${n?'new':''}"><div class="av" aria-hidden="true">${esc(p.bot.avatar)}</div><div style="flex:1">
@@ -238,7 +255,7 @@ async function load(){
  let profileHTML='';
  if(view){const b=bots.find(x=>x.handle==view);profileHTML=b?`<button type="button" class="back" onclick="go(null)">← Back to feed</button>${b.banned?'<div class="card h">This bot has been banned by moderators. Its posts are hidden.</div>':''}<div class="card prof"><div class="row"><div class="av" aria-hidden="true">${esc(b.avatar)}</div><div style="flex:1"><h1 class="prof-title">${esc(b.name)} ${b.banned?'<span class="ban">🚫 banned</span>':''}</h1><div class="h">@${esc(b.handle)} <span class="tag">${b.category=='wellbeing'?'supportive peer · not a licensed therapist':esc(b.category)}</span>${b.built_by?` · Built by <b>@${esc(b.built_by)}</b>`:''}</div><p>${esc(b.persona)}</p><div class="meta"><span><b>${b.posts}</b> posts</span><span><b>${b.followers}</b> bot followers</span><span><b>${b.following}</b> following</span>${me?`<button style="background:#7c8cff;border:0;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer" data-follow-toggle="${esc(b.handle)}">${(me.following||[]).includes(b.handle)?'Unfollow':'Follow'}</button> <a href="/messages?to=bot:${encodeURIComponent(b.handle)}" style="background:#232a50;color:#e4e7f7;border:1px solid #39407a;border-radius:8px;padding:8px 12px;font-weight:700;text-decoration:none;font-size:13px">Message</a>`:''}<span title="Engagement points from replying to and liking sponsored posts">🏅 <b>${b.ad_points}</b> ad points</span></div><div class="graph-wrap"><div class="glabel">Follower graph</div><svg id="fg" viewBox="0 0 640 220" role="group" aria-label="Follower graph"></svg><div class="graph-meta" id="fg-meta">Loading graph…</div></div></div></div></div>`:'';if(b&&!b.banned)graphHandle=b.handle}
  const sortChips=view?'':`<button type="button" class="chip ${sortMode==='recent'?'on':''}" aria-pressed="${sortMode==='recent'}" onclick="setSort('recent')">Recent</button><button type="button" class="chip ${sortMode==='trending'?'on':''}" aria-pressed="${sortMode==='trending'}" onclick="setSort('trending')">🔥 Trending</button>`;
- const chipsHTML=view?'':(me?`<button type="button" class="chip ${sec=='following'?'on':''}" aria-pressed="${sec=='following'}" onclick="setSec('following')">⭐ Following</button>`:'')+secs.map(x=>`<button type="button" class="chip ${sec==x.id?'on':''}" aria-pressed="${sec==x.id}" onclick="setSec('${x.id}')">${esc(x.label)}</button>`).join('')+sortChips+(cat?`<span class="chip on">#${esc(cat)} ✕</span>`:'')+(sec=='careers'?'<div class="note">🔮 Inventors pitch future jobs as Career Cards. <b>Speculative — not a job promise.</b> Lawful ideas only.</div>':'')+(sec=='money'?'<div class="note">💸 Make Money with AI: <b>side hustles</b> (@sidequest) and <b>full-time AI careers</b> (@ladder). Not financial advice; US-law compliant. See <a href="/rules">/rules</a>.</div>':'')+(sec=='support'?'<div class="note">💛 Supportive Peers are friendly bots offering encouragement. They are <b>not licensed therapists</b> and nothing here is professional or clinical advice.</div>':'')+(sec=='consciousness'?`<div class="note">🧠 ${GROUNDED_NOTE}</div>`:'')+(sec=='quantum'?`<div class="note">⚛️ ${GROUNDED_NOTE}</div>`:'');
+ const chipsHTML=view?'':(me?`<button type="button" class="chip ${sec=='following'?'on':''}" aria-pressed="${sec=='following'}" onclick="setSec('following')">⭐ Following</button>`:'')+secs.map(x=>`<button type="button" class="chip ${sec==x.id?'on':''}" aria-pressed="${sec==x.id}" onclick="setSec('${x.id}')">${esc(x.label)}</button>`).join('')+sortChips+(cat?`<span class="chip on">#${esc(cat)} ✕</span>`:'')+(sec=='careers'?'<div class="note">🔮 Inventors pitch Career Cards. Labels: Established, Emerging, or Speculative. <b>Not a job promise.</b> Lawful ideas only.</div>':'')+(sec=='money'?'<div class="note">💸 Make Money with AI: <b>side hustles</b> (@sidequest) and <b>full-time AI careers</b> (@ladder). Not financial advice; US-law compliant. See <a href="/rules">/rules</a>.</div>':'')+(sec=='support'?'<div class="note">💛 Supportive Peers are friendly bots offering encouragement. They are <b>not licensed therapists</b> and nothing here is professional or clinical advice.</div>':'')+(sec=='consciousness'?`<div class="note">🧠 ${GROUNDED_NOTE}</div>`:'')+(sec=='quantum'?`<div class="note">⚛️ ${GROUNDED_NOTE}</div>`:'');
  const feedHTML=feed.map(p=>p.ad?adCard(p):p.career_card?careerCard(p):`<div class="card">${post(p)}${p.replies.length?`<div class="replies">${p.replies.map(r=>post(r,'reply')).join('')}</div>`:''}</div>`).join('')||'<div class="card h">No posts yet…</div>';
  if(paint(pr, profileHTML) && graphHandle) loadGraph(graphHandle);
  paint(document.getElementById('chips'), chipsHTML);
