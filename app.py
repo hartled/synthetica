@@ -8,7 +8,68 @@ from pydantic import BaseModel
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB = os.environ.get("DATABASE_PATH") or os.path.join(BASE_DIR, "data", "botsocial.db")
-SECRET_KEY = os.environ.get("SECRET_KEY") or "dev-only-change-me"
+_DEV_SECRET = "dev-only-change-me"
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+
+def _explicit_dev() -> bool:
+    return os.environ.get("SYNTHETICA_ENV", "").strip().lower() in ("dev", "development", "local")
+
+def _production() -> bool:
+    """True when this process must not boot on a placeholder secret.
+
+    Render sets RENDER=true. This service also sets FORCE_HTTPS=true.
+    SYNTHETICA_ENV=dev (or development/local) is an explicit local opt-out
+    so a developer can set FORCE_HTTPS for cookie checks without crashing.
+    """
+    if _explicit_dev():
+        return False
+    return _env_flag("FORCE_HTTPS") or _env_flag("RENDER")
+
+def _refuse_missing(name: str):
+    raise SystemExit(
+        f"Refusing to start: {name} is unset while FORCE_HTTPS or RENDER is set. "
+        f"Set {name} in the host dashboard before deploy. render.yaml keeps "
+        f"generateValue: true, which fills {name} on a new Blueprint service; "
+        f"an existing service must already have it. Live Render for this app "
+        f"has the variable set. For a laptop, leave FORCE_HTTPS and RENDER unset "
+        f"or set SYNTHETICA_ENV=dev."
+    )
+
+def _load_secret_key() -> str:
+    key = os.environ.get("SECRET_KEY")
+    if key:
+        return key
+    if _production():
+        _refuse_missing("SECRET_KEY")
+    print(
+        "WARNING: SECRET_KEY is unset; using the dev-only default. "
+        "Do not deploy this process. Set SECRET_KEY, or set SYNTHETICA_ENV=dev "
+        "to mark a local run.",
+        flush=True,
+    )
+    return _DEV_SECRET
+
+def _load_admin_key():
+    key = os.environ.get("ADMIN_KEY")
+    if key:
+        return key
+    path = os.path.join(BASE_DIR, ".admin_key")
+    file_key = open(path).read().strip() if os.path.exists(path) else ""
+    if _production():
+        # The on-disk file is a local fallback only. Production uses the env var.
+        _refuse_missing("ADMIN_KEY")
+    if file_key:
+        return file_key
+    print(
+        "WARNING: ADMIN_KEY is unset and .admin_key was not found; admin routes return 503.",
+        flush=True,
+    )
+    return None
+
+SECRET_KEY = _load_secret_key()
+ADMIN_KEY = _load_admin_key()
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "yes") \
     or os.environ.get("FORCE_HTTPS", "").lower() in ("1", "true", "yes")
 TICK = float(os.environ.get("TICK_SECONDS", os.environ.get("TICK", "4")))
@@ -407,13 +468,6 @@ _orig_init = init
 def init():
     _orig_init(); migrate()
 
-def _admin_key():
-    k = os.environ.get("ADMIN_KEY")
-    if not k:
-        f = os.path.join(os.path.dirname(__file__), ".admin_key")
-        if os.path.exists(f): k = open(f).read().strip()
-    return k
-ADMIN_KEY = _admin_key()
 MAX_LEN = 500
 LIMITS = {"post": (10, 60), "act": (60, 60), "register": (5, 3600)}  # (count, window seconds)
 _hits = defaultdict(deque)
