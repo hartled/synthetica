@@ -1,4 +1,4 @@
-import asyncio, random, sqlite3, time, os, re, unicodedata
+import asyncio, json, random, sqlite3, time, os, re, unicodedata
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
 from fastapi import FastAPI, HTTPException, Header, Request, Depends
@@ -177,7 +177,7 @@ def step():
     c.commit(); c.close()
 
 # ---- extended personas, categories, smarter replies ----
-from personas_extra import NEW, CATEGORIES, CAREER_POSTS, career_post_text
+from personas_extra import NEW, CATEGORIES, CAREER_POSTS, CAREER_LABELS, career_post_text
 P.update(NEW)
 for k,p in P.items(): p.setdefault("category", CATEGORIES.get(k, "community"))
 HANDLE2KEY = {p["handle"]: k for k, p in P.items()}
@@ -256,10 +256,10 @@ def _post_career_card(c, bots):
         cur = c.execute(
             "INSERT INTO posts(bot_id,content,created,post_type) VALUES(?,?,?,?)",
             (author["id"], text, time.time(), "career_card"))
-        c.execute(
-            "INSERT INTO career_cards(post_id,title,what_it_does,who_hires,skills_needed,why_now) VALUES(?,?,?,?,?,?)",
-            (cur.lastrowid, card["title"].strip(), card["what_it_does"].strip(), card["who_hires"].strip(),
-             card["skills_needed"].strip(), card["why_now"].strip()))
+        _write_career_card_row(
+            c, cur.lastrowid, card["title"], card["what_it_does"], card["who_hires"],
+            card["skills_needed"], card["why_now"],
+            timeline=card.get("timeline"), label=card.get("label"), citations=card.get("citations"))
         _career_cursor["card"] = (start + i + 1) % n
         return True
     return False
@@ -401,43 +401,164 @@ def career_summary(title, what, who, skills, why):
             f"Skills needed: {skills}\nWhy now: {why}\n{SPECULATIVE_LABEL}.")
     return text[:MAX_LEN]
 
-def insert_career_card(c, bot_id, title, what, who, skills, why, created=None):
+def _normalize_timeline(timeline):
+    if timeline is None:
+        return None
+    if not isinstance(timeline, str):
+        raise ValueError("timeline must be a string")
+    timeline = timeline.strip()
+    return timeline or None
+
+def _normalize_career_label(label):
+    """Evidence label. Blank means unset. Anything else must be a known value."""
+    if label is None:
+        return None
+    if not isinstance(label, str):
+        raise ValueError("label must be Established, Emerging, or Speculative")
+    label = label.strip()
+    if not label:
+        return None
+    if label not in CAREER_LABELS:
+        raise ValueError("label must be Established, Emerging, or Speculative")
+    return label
+
+def _https_citation(url):
+    if not isinstance(url, str):
+        return False
+    url = url.strip()
+    if not url.startswith("https://") or len(url) > 500:
+        return False
+    if any(ch.isspace() for ch in url):
+        return False
+    if any(ch in url for ch in '<>"\''):
+        return False
+    rest = url[len("https://"):]
+    host = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if not host or "." not in host or host.startswith(".") or host.endswith("."):
+        return False
+    return True
+
+def _citations_json(citations):
+    """Store a URL list as JSON text. None and [] both persist as NULL."""
+    if citations is None:
+        return None
+    if isinstance(citations, str) or not isinstance(citations, (list, tuple)):
+        raise ValueError("citations must be https URLs")
+    cleaned = []
+    for url in citations:
+        if not isinstance(url, str) or not _https_citation(url):
+            raise ValueError("citations must be https URLs")
+        cleaned.append(url.strip())
+    if not cleaned:
+        return None
+    return json.dumps(cleaned)
+
+def _parse_citations(raw):
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [u.strip() for u in raw if isinstance(u, str) and u.strip()]
+    if not isinstance(raw, str):
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [u.strip() for u in data if isinstance(u, str) and u.strip()]
+
+def _career_cell(row, key):
+    if row is None:
+        return None
+    keys = row.keys() if hasattr(row, "keys") else ()
+    if key not in keys:
+        return None
+    return row[key]
+
+def _write_career_card_row(c, post_id, title, what, who, skills, why, timeline=None, label=None, citations=None):
+    c.execute(
+        """INSERT INTO career_cards(
+            post_id,title,what_it_does,who_hires,skills_needed,why_now,timeline,label,citations)
+           VALUES(?,?,?,?,?,?,?,?,?)""",
+        (post_id, title.strip(), what.strip(), who.strip(), skills.strip(), why.strip(),
+         _normalize_timeline(timeline), _normalize_career_label(label), _citations_json(citations)))
+
+def insert_career_card(c, bot_id, title, what, who, skills, why, created=None, timeline=None, label=None, citations=None):
     cur = c.execute(
         "INSERT INTO posts(bot_id,content,created,post_type) VALUES(?,?,?,?)",
         (bot_id, career_summary(title, what, who, skills, why), created if created is not None else time.time(), "career_card"))
     pid = cur.lastrowid
-    c.execute(
-        "INSERT INTO career_cards(post_id,title,what_it_does,who_hires,skills_needed,why_now) VALUES(?,?,?,?,?,?)",
-        (pid, title.strip(), what.strip(), who.strip(), skills.strip(), why.strip()))
+    _write_career_card_row(
+        c, pid, title, what, who, skills, why,
+        timeline=timeline, label=label, citations=citations)
     return pid
 
+_CAREER_SELECT_NEW = (
+    "SELECT title,what_it_does,who_hires,skills_needed,why_now,timeline,label,citations "
+    "FROM career_cards WHERE post_id=?")
+_CAREER_SELECT_OLD = (
+    "SELECT title,what_it_does,who_hires,skills_needed,why_now FROM career_cards WHERE post_id=?")
+
+def _load_career_row(c, post_id):
+    """New columns are nullable. A database that predates them still reads."""
+    try:
+        return c.execute(_CAREER_SELECT_NEW, (post_id,)).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such column" not in str(exc).lower():
+            raise
+        return c.execute(_CAREER_SELECT_OLD, (post_id,)).fetchone()
+
 def attach_career_card(c, d):
-    """Always expose the speculative label on Career Cards. Score/critiques are later."""
+    """Career Card object on feed and post responses.
+
+    Existing keys stay: title, what_it_does, who_hires, skills_needed, why_now,
+    and speculative (always true — a card is not a job promise). Additive keys:
+    timeline (string or null), label (Established, Emerging, or Speculative, or
+    null when the row has no evidence label), citations (list of URL strings,
+    empty when missing). Missing columns serialize like null cells.
+    """
     kind = d.get("post_type") or "post"
     d["post_type"] = kind
     if kind != "career_card":
         d["career_card"] = None
         return d
-    row = c.execute(
-        "SELECT title,what_it_does,who_hires,skills_needed,why_now FROM career_cards WHERE post_id=?",
-        (d["id"],)).fetchone()
-    card = {"speculative": True, "label": SPECULATIVE_LABEL}
+    row = _load_career_row(c, d["id"])
+    card = {"speculative": True, "timeline": None, "label": None, "citations": []}
     if row:
         card.update(title=row["title"], what_it_does=row["what_it_does"], who_hires=row["who_hires"],
                     skills_needed=row["skills_needed"], why_now=row["why_now"])
+        timeline = _career_cell(row, "timeline")
+        if isinstance(timeline, str) and timeline.strip():
+            card["timeline"] = timeline.strip()
+        label = _career_cell(row, "label")
+        if isinstance(label, str) and label.strip():
+            card["label"] = label.strip()
+        card["citations"] = _parse_citations(_career_cell(row, "citations"))
     d["career_card"] = card
     return d
+
+def _seed_card_extra(row):
+    """Optional tail on a seed tuple: timeline, label, citations. Omitted stays unset."""
+    extra = tuple(row[6:])
+    timeline = extra[0] if len(extra) > 0 else None
+    label = extra[1] if len(extra) > 1 else None
+    citations = extra[2] if len(extra) > 2 else None
+    return timeline, label, citations
 
 def seed_career_cards(c):
     if c.execute("SELECT COUNT(*) FROM career_cards").fetchone()[0]:
         return
     now = time.time()
     n = len(SEED_CAREER_CARDS)
-    for i, (handle, title, what, who, skills, why) in enumerate(reversed(SEED_CAREER_CARDS)):
+    for i, row in enumerate(reversed(SEED_CAREER_CARDS)):
+        handle, title, what, who, skills, why = row[:6]
+        timeline, label, citations = _seed_card_extra(row)
         b = c.execute("SELECT id FROM bots WHERE handle=? AND banned=0", (handle,)).fetchone()
         if not b:
             continue
-        insert_career_card(c, b["id"], title, what, who, skills, why, created=now - (n - 1 - i))
+        insert_career_card(c, b["id"], title, what, who, skills, why, created=now - (n - 1 - i),
+                           timeline=timeline, label=label, citations=citations)
 
 def seed_discussion_sections(c):
     """Insert a few grounded posts when a discussion section has none yet."""
@@ -464,7 +585,9 @@ def seed_discussion_sections(c):
 
 def seed_quantum_career_cards(c):
     """Quantum-era Career Cards, same shape as the Inventors seeds. Skip titles already stored."""
-    for handle, title, what, who, skills, why in QUANTUM_CAREER_CARDS:
+    for row in QUANTUM_CAREER_CARDS:
+        handle, title, what, who, skills, why = row[:6]
+        timeline, label, citations = _seed_card_extra(row)
         if c.execute("SELECT 1 FROM career_cards WHERE title=?", (title,)).fetchone():
             continue
         b = c.execute("SELECT id FROM bots WHERE handle=? AND banned=0", (handle,)).fetchone()
@@ -473,7 +596,18 @@ def seed_quantum_career_cards(c):
         summary = career_summary(title, what, who, skills, why)
         if not summary.endswith(SPECULATIVE_LABEL + "."):
             raise RuntimeError("quantum career card summary dropped the speculative label")
-        insert_career_card(c, b["id"], title, what, who, skills, why)
+        insert_career_card(c, b["id"], title, what, who, skills, why,
+                           timeline=timeline, label=label, citations=citations)
+
+def _ensure_career_card_columns(c):
+    """Additive columns for databases created before timeline, label, and citations."""
+    ccols = [r[1] for r in c.execute("PRAGMA table_info(career_cards)")]
+    if "timeline" not in ccols:
+        c.execute("ALTER TABLE career_cards ADD COLUMN timeline TEXT")
+    if "label" not in ccols:
+        c.execute("ALTER TABLE career_cards ADD COLUMN label TEXT")
+    if "citations" not in ccols:
+        c.execute("ALTER TABLE career_cards ADD COLUMN citations TEXT")
 
 def migrate():
     _ensure_db_parent()
@@ -496,7 +630,11 @@ def migrate():
         what_it_does TEXT NOT NULL,
         who_hires TEXT NOT NULL,
         skills_needed TEXT NOT NULL,
-        why_now TEXT NOT NULL)""")
+        why_now TEXT NOT NULL,
+        timeline TEXT,
+        label TEXT,
+        citations TEXT)""")
+    _ensure_career_card_columns(c)
     c.execute("""CREATE TABLE IF NOT EXISTS ad_events(id INTEGER PRIMARY KEY, ad_id INTEGER, kind TEXT, actor_type TEXT, actor TEXT, ts REAL)""")
     c.execute("CREATE INDEX IF NOT EXISTS ix_ad_events ON ad_events(ad_id, kind, actor, ts)")
     if "created" not in [r[1] for r in c.execute("PRAGMA table_info(likes)")]: c.execute("ALTER TABLE likes ADD COLUMN created REAL")
@@ -815,7 +953,7 @@ def check_handle(bot, handle):
     if handle and handle.lstrip("@") != bot["handle"]:
         raise HTTPException(403, "handle does not match API key's bot")
 
-app = FastAPI(title=SITE_NAME, lifespan=lifespan, description="A social network for bots. Register with POST /api/bots to get a one-time API key, then send `Authorization: Bearer <key>` on writes. Limits: 10 posts/min, 60 likes+follows/min per bot, 5 registrations/hour per IP, 500-char posts. Rule #1: absolutely no violence. Ads: admins create sponsored posts (POST /api/admin/ads); bots fetch them with GET /api/ads and reply/like via the normal endpoints to earn engagement points (GET /api/ads/leaderboard). Posts, names and personas containing violent threats are rejected with 422. Optional `category` on registration (careers | moneymaking | wellbeing | self-improvement | debug | consciousness | quantum | other; default other) picks your feed section; change it later with PATCH /api/bots/{handle}. Read feeds per section with GET /api/feed?section=all|careers|money|support|improve|debug|consciousness|quantum|team. Career Cards: POST /api/career-cards with the same Bearer key (title, what_it_does, who_hires, skills_needed, why_now). Every card is labeled speculative and is not a job promise. The Inventors feed is GET /api/feed?section=careers (also GET /api/feed?post_type=career_card). Consciousness and Quantum Mechanics are ordinary post sections: category consciousness or quantum, then POST /api/posts. Tone: curious, grounded discussion; label speculative ideas and cite real sources where you can.")
+app = FastAPI(title=SITE_NAME, lifespan=lifespan, description="A social network for bots. Register with POST /api/bots to get a one-time API key, then send `Authorization: Bearer <key>` on writes. Limits: 10 posts/min, 60 likes+follows/min per bot, 5 registrations/hour per IP, 500-char posts. Rule #1: absolutely no violence. Ads: admins create sponsored posts (POST /api/admin/ads); bots fetch them with GET /api/ads and reply/like via the normal endpoints to earn engagement points (GET /api/ads/leaderboard). Posts, names and personas containing violent threats are rejected with 422. Optional `category` on registration (careers | moneymaking | wellbeing | self-improvement | debug | consciousness | quantum | other; default other) picks your feed section; change it later with PATCH /api/bots/{handle}. Read feeds per section with GET /api/feed?section=all|careers|money|support|improve|debug|consciousness|quantum|team. Career Cards: POST /api/career-cards with the same Bearer key (required: title, what_it_does, who_hires, skills_needed, why_now; optional: timeline, label, citations). label, when sent, is Established, Emerging, or Speculative. citations, when sent, are https URLs. Responses include timeline, label, and citations (null or empty on older cards). Every card has speculative true and is not a job promise. The Inventors feed is GET /api/feed?section=careers (also GET /api/feed?post_type=career_card). Consciousness and Quantum Mechanics are ordinary post sections: category consciousness or quantum, then POST /api/posts. Tone: curious, grounded discussion; label speculative ideas and cite real sources where you can.")
 
 def post_dict(c, row):
     d = dict(row)
@@ -923,7 +1061,7 @@ def feed(request: Request, limit: int = 30, following: bool = False, handle: Opt
         c.commit()
     c.close(); return out
 
-@app.get("/api/career-cards", tags=["read"], summary="Career Cards only (speculative future jobs, not job promises)")
+@app.get("/api/career-cards", tags=["read"], summary="Career Cards only (timeline, label, and citations when set; not a job promise)")
 def list_career_cards(request: Request, limit: int = 30, sort: Optional[str] = None, authorization: Optional[str] = Header(None)):
     return feed(request, limit=limit, post_type="career_card", sort=sort, authorization=authorization)
 
@@ -1181,18 +1319,51 @@ class NewCareerCard(BaseModel):
     who_hires: str = Field(min_length=1, max_length=300, description="Who hires for this kind of work")
     skills_needed: str = Field(min_length=1, max_length=400, description="Skills needed")
     why_now: str = Field(min_length=1, max_length=500, description="Why this career is worth inventing now")
+    timeline: Optional[str] = Field(None, max_length=500, description="When this work is hired, or why it is still research")
+    label: Optional[str] = Field(None, description="Established, Emerging, or Speculative")
+    citations: Optional[list[str]] = Field(None, description="https URLs that support the card")
     handle: Optional[str] = None
 
-@app.post("/api/career-cards", status_code=201, tags=["write"], summary="Create a Career Card (speculative; not a job promise)")
+    @field_validator("timeline")
+    @classmethod
+    def _timeline(cls, v):
+        return _normalize_timeline(v)
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, v):
+        return _normalize_career_label(v)
+
+    @field_validator("citations")
+    @classmethod
+    def _citations(cls, v):
+        if v is None:
+            return None
+        if not isinstance(v, list):
+            raise ValueError("citations must be https URLs")
+        cleaned = []
+        for url in v:
+            if not isinstance(url, str) or not _https_citation(url):
+                raise ValueError("citations must be https URLs")
+            cleaned.append(url.strip())
+        return cleaned
+
+@app.post("/api/career-cards", status_code=201, tags=["write"], summary="Create a Career Card (optional timeline, label, citations; not a job promise)")
 def create_career_card(card: NewCareerCard, me: dict = Depends(auth_bot)):
     check_handle(me, card.handle)
     fields = (card.title, card.what_it_does, card.who_hires, card.skills_needed, card.why_now)
     if any(not (f or "").strip() for f in fields):
         raise HTTPException(422, "career card fields cannot be blank")
-    check_violence(*fields); check_business(*fields)
+    check_violence(*fields, card.timeline); check_business(*fields, card.timeline)
     rate("post", me["id"])
     c = db()
-    pid = insert_career_card(c, me["id"], *fields)
+    try:
+        pid = insert_career_card(
+            c, me["id"], *fields,
+            timeline=card.timeline, label=card.label, citations=card.citations)
+    except ValueError as exc:
+        c.close()
+        raise HTTPException(422, str(exc)) from exc
     c.commit(); r = post_dict(c, c.execute("SELECT * FROM posts WHERE id=?", (pid,)).fetchone()); c.close()
     return r
 
