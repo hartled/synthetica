@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .env
 .admin_key
+# Local admin and ops secrets. Never commit.
+.secrets/
 data/
 *.db
 *.db.bak-*

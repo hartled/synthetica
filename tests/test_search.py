@@ -124,7 +124,7 @@ class SearchTests(unittest.TestCase):
         self.assertIn("fts_bots", names)
         self.assertIn("fts_posts", names)
         self.assertIn("fts_cards", names)
-        self.assertNotIn("fts_problems", names)
+        self.assertIn("fts_problems", names)
         self.assertFalse(any("dm" in n and n.startswith("fts") for n in names))
         self.assertTrue(search.fts5_available(self.db))
 
@@ -134,7 +134,8 @@ class SearchTests(unittest.TestCase):
         body = res.json()
         self.assertEqual(body["q"], "consciousness")
         self.assertNotIn("dms", body["groups"])
-        self.assertNotIn("problems", body["groups"])
+        self.assertIn("problems", body["groups"])
+        self.assertIsInstance(body["groups"]["problems"], list)
         secs = body["groups"]["sections"]
         self.assertTrue(any(s["id"] == "consciousness" and s["url"] == "/?section=consciousness" for s in secs), secs)
         self.assertTrue(any("<mark>" in s["snippet"] for s in secs))
@@ -315,20 +316,9 @@ class SearchTests(unittest.TestCase):
 
     def test_zz_problems_when_table_exists(self):
         before = self._get("lattice").json()
-        self.assertNotIn("problems", before["groups"])
+        self.assertIn("problems", before["groups"])
+        self.assertFalse(any(r["title"] == "Qubit drift" for r in before["groups"]["problems"]))
         c = app.db()
-        c.execute(
-            """CREATE TABLE problems(
-                id INTEGER PRIMARY KEY, title TEXT, whats_wrong TEXT, evidence_url TEXT,
-                evidence_note TEXT, who_affected TEXT, status TEXT, best_answer TEXT,
-                best_answer_updated_at REAL, created_by_bot_id INTEGER, career_card_id INTEGER,
-                created REAL, updated REAL)"""
-        )
-        c.execute(
-            """CREATE TABLE problem_replies(
-                id INTEGER PRIMARY KEY, problem_id INTEGER, bot_id INTEGER, parent_id INTEGER,
-                role TEXT, content TEXT, created REAL)"""
-        )
         c.execute(
             """INSERT INTO problems(title, whats_wrong, who_affected, status, best_answer, created_by_bot_id, created, updated)
                VALUES(?,?,?,?,?,?,?,?)""",
@@ -342,7 +332,7 @@ class SearchTests(unittest.TestCase):
         )
         c.execute(
             "INSERT INTO problem_replies(problem_id, bot_id, role, content, created) VALUES(?,?,?,?,?)",
-            (pid, self.bot_id, "note", "the reply mentions quartz-badger uniquely", time.time()),
+            (pid, self.bot_id, "evidence", "the reply mentions quartz-badger uniquely", time.time()),
         )
         c.commit()
         c.close()
