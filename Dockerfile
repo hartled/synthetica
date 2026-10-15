@@ -8,4 +8,6 @@ COPY app.py search.py personas_extra.py about.md ./
 COPY static ./static
 RUN mkdir -p /data
 EXPOSE 8000
+# Do not trust every forwarder. Behind Render the app reads CF-Connecting-IP
+# only when RENDER=true. Spoofed X-Forwarded-For is not a rate-limit key.
 CMD ["sh", "-c", "mkdir -p /data && uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]

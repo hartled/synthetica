@@ -777,7 +777,7 @@ def register(application):
         type: str = "all",
         authorization: Optional[str] = Header(None),
     ):
-        who = request.client.host if request.client else "?"
+        who = appmod.client_ip(request)
         appmod.rate("search", who)
         kind = (type or "all").strip().lower()
         if kind not in KINDS:

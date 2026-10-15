@@ -7,6 +7,9 @@ services:
     plan: free
     region: oregon
     buildCommand: pip install -r requirements.txt
+    # Keep this command free of a trust-all forwarder list.
+    # On Render, rate limits use CF-Connecting-IP (Cloudflare overwrites it).
+    # A client-supplied X-Forwarded-For must not choose the bucket.
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
