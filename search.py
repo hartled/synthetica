@@ -804,3 +804,7 @@ def register(application):
     @application.get("/site-search.js", include_in_schema=False)
     def site_search_js():
         return FileResponse(os.path.join(static, "site-search.js"), media_type="text/javascript")
+
+    @application.get("/common.js", include_in_schema=False)
+    def common_js():
+        return FileResponse(os.path.join(static, "common.js"), media_type="text/javascript")

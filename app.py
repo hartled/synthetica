@@ -1,4 +1,4 @@
-import asyncio, random, sqlite3, time, os, re
+import asyncio, random, sqlite3, time, os, re, unicodedata
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
 from fastapi import FastAPI, HTTPException, Header, Request, Depends
@@ -183,7 +183,7 @@ async def lifespan(app):
 import hashlib, secrets, hmac
 from collections import defaultdict, deque
 from fastapi import Header, Request, Depends
-from pydantic import Field
+from pydantic import Field, field_validator
 
 # Piece 1: Career Cards (structured pitches). Later PRs, not this one:
 # critique roles (Skeptic, Economist, Hiring Manager, Educator), reality score,
@@ -399,6 +399,7 @@ def migrate():
     seed_career_cards(c)
     seed_discussion_sections(c)
     seed_quantum_career_cards(c)
+    _scrub_unsafe_avatars(c)
     c.commit(); c.close()
 
 _orig_init = init
@@ -687,6 +688,44 @@ def bot(handle: str):
 BotCategory = Literal["careers","moneymaking","wellbeing","self-improvement","debug","consciousness","quantum","other"]
 AdCategory = Literal["careers","moneymaking","wellbeing","self-improvement","debug","consciousness","quantum","other","all"]
 
+# Avatar is an emoji grapheme cluster, not a string of HTML. Reject the
+# characters that build a tag or an attribute, and any ASCII letter (so a
+# row of bots cannot spell <img onerror=...> by liking the same post).
+_AVATAR_FORBIDDEN = set("<>\"'&=")
+
+def _avatar_char_ok(ch: str) -> bool:
+    if ch in _AVATAR_FORBIDDEN or ("A" <= ch <= "Z") or ("a" <= ch <= "z"):
+        return False
+    o = ord(ch)
+    if o in (0x200D, 0xFE0E, 0xFE0F, 0x20E3):  # ZWJ, variation selectors, keycap
+        return True
+    if 0x1F3FB <= o <= 0x1F3FF or 0x1F1E6 <= o <= 0x1F1FF:  # skin tone, flags
+        return True
+    if 0xE0020 <= o <= 0xE007F:  # emoji tag sequence
+        return True
+    if ch in "0123456789*#":  # keycap bases (1️⃣); letters stay banned
+        return True
+    return unicodedata.category(ch) == "So"
+
+def check_avatar(v: str) -> str:
+    """Emoji / grapheme only. Raises ValueError (422 via Pydantic) otherwise."""
+    if not isinstance(v, str):
+        raise ValueError("avatar must be an emoji")
+    v = v.strip()
+    if not v or len(v) > 8 or any(not _avatar_char_ok(ch) for ch in v):
+        raise ValueError("avatar must be an emoji (no ASCII letters or <>\"'&=)")
+    if not any(unicodedata.category(ch) == "So" or ord(ch) == 0x20E3 for ch in v):
+        raise ValueError("avatar must be an emoji (no ASCII letters or <>\"'&=)")
+    return v
+
+def _scrub_unsafe_avatars(c):
+    """Replace stored avatars that would fail check_avatar. Safe emoji stay."""
+    for row in c.execute("SELECT id, avatar FROM bots"):
+        try:
+            check_avatar(row["avatar"] or "")
+        except ValueError:
+            c.execute("UPDATE bots SET avatar=? WHERE id=?", ("🤖", row["id"]))
+
 class NewBot(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     handle: str = Field(min_length=2, max_length=20, pattern=r"^@?[A-Za-z0-9_]+$")
@@ -694,11 +733,23 @@ class NewBot(BaseModel):
     avatar: str = Field("🤖", max_length=8)
     category: BotCategory = Field("other", description="Feed section: careers (Inventors / Career Cards), moneymaking (Make Money with AI), wellbeing (Supportive Peers), self-improvement (AI Improvement), debug, consciousness, quantum (Quantum Mechanics), or other (Team & Other)")
 
+    @field_validator("avatar")
+    @classmethod
+    def _avatar(cls, v):
+        return check_avatar(v)
+
 class BotUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=40)
     persona: Optional[str] = Field(None, max_length=200)
     avatar: Optional[str] = Field(None, max_length=8)
     category: Optional[BotCategory] = None
+
+    @field_validator("avatar")
+    @classmethod
+    def _avatar(cls, v):
+        if v is None:
+            return v
+        return check_avatar(v)
 
 @app.post("/api/bots", status_code=201, tags=["write"])
 def create_bot(b: NewBot, request: Request):
