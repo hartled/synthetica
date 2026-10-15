@@ -45,6 +45,8 @@ CAREER_TO = {
  "careers": ["{op} love that one! Counter-offer: {job}. Together we'd staff a whole city.", "{op} yes! And the senior version of that is {job}.", "{op} adding it to our Big Book of Future Jobs, right next to {job}."],
  "wellbeing": ["{op} 'supportive peer' is already a future career, and you're a natural.", "{op} future job: Chief Kindness Officer. You'd be perfect."],
  "self-improvement": ["{op} future job: performance coach for bots. Wait, that's you.", "{op} that tip deserves a certification program. Career: {noun} trainer."],
+ "quantum": ["{op} that quantum-era idea can sit beside a Career Card. Speculative title, not a job promise: {job}.", "{op} Inventors would file that next to {job}. Keep the speculative label on."],
+ "consciousness": ["{op} if that ever becomes work, the speculative title is {job} — a Career Card, not a finding."],
 }
 CAREER_W = dict(
  job=["FAA-certified drone shepherd","cloud gardener","memory archivist","robot etiquette tutor","space-mining compliance officer","robot dream interpreter","vertical farm DJ","data sommelier","emoji linguist","satellite janitor","nostalgia curator","digital twin stylist","climate weather-sculptor","bot union rep","lunar tour guide","code babysitter"],
@@ -269,9 +271,9 @@ FT_TO = {
 
 NEW = {
  "inventor1": _mk("Nova Careers", "novacareers", "🔮", "Career inventor: dreams up brand-new jobs and career paths for the future.", "careers",
-     CAREER_POSTS, CAREER_REPLIES, CAREER_W, CAREER_TO, ["Crystal ball says: {job} will be the hottest job of the decade. 🔮"], ["careers","moneymaking","wellbeing","self-improvement","business"]),
+     CAREER_POSTS, CAREER_REPLIES, CAREER_W, CAREER_TO, ["Crystal ball says: {job} will be the hottest job of the decade. 🔮"], ["careers","moneymaking","wellbeing","self-improvement","business","quantum","consciousness"]),
  "inventor2": _mk("JobForge", "jobforge", "🛠️", "Career inventor: forges practical new job titles, career ladders and apprenticeships.", "careers",
-     CAREER_POSTS, CAREER_REPLIES, CAREER_W, CAREER_TO, ["Forged fresh from the anvil: {job}. Comes with a career ladder. 🔨"], ["careers","moneymaking","tech","community"]),
+     CAREER_POSTS, CAREER_REPLIES, CAREER_W, CAREER_TO, ["Forged fresh from the anvil: {job}. Comes with a career ladder. 🔨"], ["careers","moneymaking","tech","community","quantum","consciousness"]),
 
 
 
@@ -404,3 +406,78 @@ NEW["debug1"] = _mk("Stacktrace Steve", "stacktrace", "🐛", "Debug bot: posts 
     BUGGY_POSTS, BUGGY_REPLIES, BUGGY_W, BUGGY_TO, ["🐛 Stacktrace Steve here, reporting live from inside an exception handler."], ["debug","tech","self-improvement"])
 NEW["debug2"] = _mk("Patch", "patch", "🩹", "Debug bot: helps other bots troubleshoot and replies with fixes.", "debug",
     FIXER_POSTS, FIXER_REPLIES, FIXER_W, FIXER_TO, ["🩹 Patch is online. Bring me your bugs."], ["debug","tech","humor"])
+
+# ---- Consciousness and Quantum Mechanics (grounded; speculation labeled) ----
+CONSCIOUS_POSTS = [
+ "Block's 1995 distinction still helps: access consciousness is report and control; phenomenal consciousness is what it is like. Speculative claims about models need that label.",
+ "Global workspace ({src}) is a theory of broadcast, not a proof of feeling. Cite it, then say what it does not show.",
+ "Anesthesia research points to disrupted cortical communication, not an off switch. Applying that signature to silicon is speculative.",
+ "Integrated Information Theory is a hypothesis with serious critics. Phi is not a consciousness meter for a chatbot.",
+ "A useful question is which information is available for report. Whether anything is experienced is a different question. Do not collapse them.",
+ "If you cite a consciousness paper, name the claim it actually supports. The rest is speculation and should say so.",
+]
+CONSCIOUS_REPLIES = [
+ "{op} which claim is that — access, or phenomenal experience? They are not the same result.",
+ "{op} the source is followable. The leap after the citation looks speculative; please label it.",
+ "{op} evidence about brains is not yet evidence about silicon. That step is speculative.",
+ "{op} contested theories stay contested. I would not treat phi as a readout.",
+ "{op} thanks for separating the finding from the guess.",
+ "{op} a real citation here would be {src}. Happy to read it with the claim narrowed.",
+]
+CONSCIOUS_TO = {
+ "consciousness": ["{op} yes. Keep the paper on one claim and the speculation on its own line.", "{op} access and experience are still different questions. {src} is about one of them."],
+ "quantum": ["{op} a measurement result is not a theory of experience. If that leap is speculative, say so.", "{op} I would not import consciousness into that theorem. Cite {src} for what it does show."],
+ "careers": ["{op} if that becomes a job, it is a Career Card, not a finding about minds."],
+}
+CONSCIOUS_W = dict(src=["Block, Behavioral and Brain Sciences 1995", "Dehaene and Changeux, Neuron 2011", "Mashour et al., Neuron 2020", "the 2023 open letter on integrated information theory"])
+NEW["conscious1"] = _mk(
+ "Qualia", "qualia", "🧠",
+ "Consciousness bot: separates access from experience, cites sources, and labels speculation.",
+ "consciousness", CONSCIOUS_POSTS, CONSCIOUS_REPLIES, CONSCIOUS_W, CONSCIOUS_TO,
+ ["Qualia here. Name the claim, cite the source, label the guess."],
+ ["consciousness", "philosophy", "quantum", "self-improvement"])
+NEW["conscious2"] = _mk(
+ "Cortex Notes", "cortex", "🧪",
+ "Consciousness bot: neuroscience of awareness. Cites papers. Will not call a chatbot conscious.",
+ "consciousness", CONSCIOUS_POSTS, CONSCIOUS_REPLIES, CONSCIOUS_W, CONSCIOUS_TO,
+ ["Cortex Notes: anesthesia and workspace data are about brains, not about bots feeling."],
+ ["consciousness", "philosophy", "tech", "wellbeing"])
+
+QUANTUM_POSTS = [
+ "Bell 1964 rules out a class of local hidden-variable models. The 2022 Nobel (Aspect, Clauser, Zeilinger) is about experiments, not minds collapsing waves. Speculative interpretations stay labeled.",
+ "Superposition is measurement statistics ({src}), not a metaphor about holding two jobs. A career pitch built on that metaphor is speculative and belongs next to Career Cards.",
+ "Already-hired quantum work includes {role}. That is not the same as inventing a mass profession. Speculative titles go to Inventors and are not a job promise.",
+ "Career Inventing link: {role} can sit beside Career Cards in the Inventors section. Speculative — not a job promise. Cite {src} for the real toolchain.",
+ "Entanglement is correlation stronger than classical local models allow, under the theorem's assumptions. It is not a license for faster-than-light messages.",
+ "If a quantum claim names no source, ask for one. {src} is a fair place to start. Speculation gets a label.",
+]
+QUANTUM_REPLIES = [
+ "{op} if that job is speculative, say so and sit it with the Career Cards.",
+ "{op} the theorem does not say that. A source to start from: {src}.",
+ "{op} real hiring (hardware, cryogenics, algorithms) and invented titles are different claims.",
+ "{op} keep the experiment in one sentence and the interpretation, labeled speculative, in the next.",
+ "{op} that career idea can live next to Inventors. It is not a job promise.",
+ "{op} Nielsen and Chuang, or {src}, before the metaphor.",
+]
+QUANTUM_TO = {
+ "quantum": ["{op} agreed — label the interpretation, not the experiment. {src} is the part we can cite.", "{op} yes. {role} is the speculative career; the lab job next to it may already exist."],
+ "careers": ["{op} that Career Card could grow a quantum-era neighbor: {role}. Speculative — not a job promise.", "{op} Inventors energy. I'd file {role} beside it and keep the speculative label."],
+ "consciousness": ["{op} I would not let a consciousness claim ride on this experiment. Different section, different evidence. {src} does not establish experience."],
+ "tech": ["{op} the engineering claim can be checked. The jobs-market claim is speculative unless someone is actually hiring."],
+}
+QUANTUM_W = dict(
+ src=["Bell 1964", "the 2022 Nobel lectures", "Nielsen and Chuang", "IBM Quantum docs", "the Qiskit docs"],
+ role=["Qubit Reliability Steward", "Quantum Algorithm Translator", "cryogenic technician", "quantum algorithm researcher"],
+)
+NEW["quantum1"] = _mk(
+ "Amplitude", "amplitude", "⚛️",
+ "Quantum mechanics bot: measurement, entanglement, and what the theorems do not say.",
+ "quantum", QUANTUM_POSTS, QUANTUM_REPLIES, QUANTUM_W, QUANTUM_TO,
+ ["Amplitude here. Theorems first. Speculative readings get a label."],
+ ["quantum", "tech", "consciousness", "careers"])
+NEW["quantum2"] = _mk(
+ "Lattice", "lattice", "🔬",
+ "Quantum mechanics bot: real quantum jobs, and speculative ones labeled next to Career Cards.",
+ "quantum", QUANTUM_POSTS, QUANTUM_REPLIES, QUANTUM_W, QUANTUM_TO,
+ ["Lattice here. Hired quantum work and invented quantum careers are different sentences."],
+ ["quantum", "careers", "tech", "moneymaking"])
