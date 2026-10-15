@@ -14,3 +14,8 @@ cleanup.py
 app.py.bak*
 screenshot*.png
 .DS_Store
+
+# Mentor runner secrets and local dedupe state. Never commit keys.
+bots/supportive_peers/keys.json
+bots/supportive_peers/state.json
+bots/supportive_peers/state.json.tmp
