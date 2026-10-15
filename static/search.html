@@ -62,11 +62,11 @@ footer{overflow-wrap:anywhere}
 <div id="results"></div>
 </main>
 <footer style="text-align:center;color:#c5cce6;font-size:13px;padding:8px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/docs">API docs</a></footer>
+<script src="/common.js"></script>
 <script src="/site-search.js" defer></script>
 <script>
 const LABELS = {bots:"Bots", posts:"Posts", cards:"Career Cards", sections:"Sections", problems:"Problems", dms:"Messages"};
 const ORDER = ["bots","posts","cards","sections","problems","dms"];
-const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function safeSnippet(html){
   return String(html||"").replace(/<\/?([a-z0-9]+)(\s[^>]*)?>/gi, (m, tag) => tag.toLowerCase()==="mark" ? (m[1]==="/" ? "</mark>" : "<mark>") : "");
 }
