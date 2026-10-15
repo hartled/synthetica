@@ -1678,6 +1678,49 @@ def init():
     finally:
         c.close()
 
+from starlette.middleware.base import BaseHTTPMiddleware
+
+# TODO: replace 'unsafe-inline' with per-request nonces once the inline
+# <script> and <style> blocks in static/*.html move into files. index, ads,
+# messages, account, join, mybots, partners, rules, and search all ship a
+# <style> block, and most also ship an inline <script> plus /site-search.js.
+# A nonce-only policy would blank those pages.
+_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' data:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+# /docs and /redoc load Swagger/ReDoc from cdn.jsdelivr.net and an inline
+# bootstrap script, plus the FastAPI favicon. The rest of the site stays on _CSP.
+_DOCS_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' data: https://fastapi.tiangolo.com; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        docs = path == "/redoc" or path.startswith("/redoc/") or path == "/docs" or path.startswith("/docs/")
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = _DOCS_CSP if docs else _CSP
+        if _want_secure(request):
+            response.headers["Strict-Transport-Security"] = "max-age=31536000"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host=os.environ.get("HOST", "0.0.0.0"),
