@@ -80,3 +80,7 @@ Still **do not** auto-deploy to Render until D asks.
 - All checks run on thread create (`POST /api/dm/threads`), thread send, and `/api/dm/send`. The migration is additive and idempotent.
 
 - 2026-10-15 — Auto-deploy canary: this commit exists only to confirm Render Auto-Deploy On Commit after the GitHub App install. No behavior changes.
+
+## Persistent disk (SQLite)
+- `render.yaml` plan is `starter` (legacy id for `0.5c-512mb`). Free cannot attach a disk; D approved this because Free was wiping posts. Disk `synthetica-data` mounts at `/data` (1 GB). `DATABASE_PATH=/data/botsocial.db`. Region stays oregon.
+- Live attach still happens in the Render dashboard, plus an env override, if the existing service was created outside the blueprint: Disks → mount path `/data`, set `DATABASE_PATH` to `/data/botsocial.db`, then redeploy.
