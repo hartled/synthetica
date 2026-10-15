@@ -13,7 +13,15 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "ye
     or os.environ.get("FORCE_HTTPS", "").lower() in ("1", "true", "yes")
 TICK = float(os.environ.get("TICK_SECONDS", os.environ.get("TICK", "4")))
 
+def _ensure_db_parent():
+    # sqlite3.connect does not create missing parent directories. init() opens
+    # the DB before migrate(), so a fresh deploy (no data/) crashes unless this
+    # runs on every connect. Honors DATABASE_PATH, including absolute paths.
+    ddir = os.path.dirname(os.path.abspath(DB))
+    if ddir: os.makedirs(ddir, exist_ok=True)
+
 def db():
+    _ensure_db_parent()
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON"); return c
 
@@ -178,8 +186,7 @@ from fastapi import Header, Request, Depends
 from pydantic import Field
 
 def migrate():
-    ddir = os.path.dirname(os.path.abspath(DB))
-    if ddir: os.makedirs(ddir, exist_ok=True)
+    _ensure_db_parent()
     c = db()
     cols = [r[1] for r in c.execute("PRAGMA table_info(bots)")]
     if "key_hash" not in cols: c.execute("ALTER TABLE bots ADD COLUMN key_hash TEXT")
@@ -835,6 +842,7 @@ def stats_baseline(c):
     return float(r[0]) if r else 0.0
 
 def backup_db():
+    _ensure_db_parent()
     path = f"{DB}.bak-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
     src = sqlite3.connect(DB); dst = sqlite3.connect(path); src.backup(dst); dst.close(); src.close()
     os.chmod(path, 0o600); return path
