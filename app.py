@@ -181,6 +181,7 @@ async def lifespan(app):
     t = asyncio.create_task(loop()); yield; t.cancel()
 
 import hashlib, secrets, hmac
+import ipaddress
 from collections import defaultdict, deque
 from fastapi import Header, Request, Depends
 from pydantic import Field, field_validator
@@ -424,6 +425,39 @@ def rate(kind, who):
         retry = int(q[0] + win - now) + 1
         raise HTTPException(429, f"rate limit: {n} {kind} per {win}s", headers={"Retry-After": str(retry)})
     q.append(now)
+
+def _plausible_ip(value: str) -> bool:
+    if not value or len(value) > 64:
+        return False
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+def client_ip(request: Request) -> str:
+    """Address callers pass to rate(). The rate() signature is unchanged.
+
+    Off Render (local uvicorn, tests) this is the socket peer. X-Forwarded-For
+    and CF-Connecting-IP are ignored, so a client cannot pick a bucket.
+
+    On Render the platform sets RENDER=true and Cloudflare overwrites
+    CF-Connecting-IP with the real client (it is not a copy of a header the
+    browser sent). That is the only forwarded header we trust, and only when
+    RENDER is set. A spoofed X-Forwarded-For never changes the bucket. Uvicorn
+    is not started with --forwarded-allow-ips='*'.
+    https://developers.cloudflare.com/fundamentals/reference/http-request-headers/#cf-connecting-ip
+    """
+    peer = "?"
+    if request is not None and request.client is not None and request.client.host:
+        peer = request.client.host
+    render = os.environ.get("RENDER", "").strip().lower() in ("1", "true", "yes")
+    if not render or request is None:
+        return peer
+    cf = (request.headers.get("cf-connecting-ip") or "").split(",")[0].strip()
+    if _plausible_ip(cf):
+        return cf
+    return peer
 
 def hkey(k): return hashlib.sha256(k.encode()).hexdigest()
 def shash(k): return hashlib.sha256((SECRET_KEY + ":" + k).encode()).hexdigest()
@@ -754,7 +788,7 @@ class BotUpdate(BaseModel):
 @app.post("/api/bots", status_code=201, tags=["write"])
 def create_bot(b: NewBot, request: Request):
     check_violence(b.name, b.persona)
-    rate("register", request.client.host if request.client else "?")
+    rate("register", client_ip(request))
     key = "syn_" + secrets.token_urlsafe(32)
     c = db()
     try:
@@ -1054,7 +1088,7 @@ def viewer(c, request, authorization):
         if b: return "bot", f"bot:{b[0]}"
     h = current_human(c, request)
     if h: return "human", f"human:{h['id']}"
-    ip = request.client.host if request.client else "?"
+    ip = client_ip(request)
     return "human", "h:" + hashlib.sha256(f"{ip}|{request.headers.get('user-agent','')}".encode()).hexdigest()[:16]
 
 def record(c, ad_id, kind, atype, actor, dedupe=True):
@@ -1227,7 +1261,7 @@ class Login(BaseModel):
 
 @app.post("/api/auth/signup", status_code=201, tags=["humans"], summary="Create a human account (sets a session cookie)")
 def signup(s: Signup, request: Request, response: _Resp):
-    rate("signup", request.client.host if request.client else "?")
+    rate("signup", client_ip(request))
     check_violence(s.username)
     c = db()
     try:
@@ -1238,7 +1272,7 @@ def signup(s: Signup, request: Request, response: _Resp):
 
 @app.post("/api/auth/login", tags=["humans"], summary="Log in (sets a session cookie)")
 def login(l: Login, request: Request, response: _Resp):
-    rate("login", request.client.host if request.client else "?")
+    rate("login", client_ip(request))
     c = db(); h = c.execute("SELECT * FROM humans WHERE email=?", (l.email.lower(),)).fetchone(); c.close()
     try:
         if not h: raise VerifyMismatchError()
