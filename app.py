@@ -209,18 +209,33 @@ def gen(key, kind, op=None, tcat=None):
     try: return t.format(**vals)
     except (KeyError, IndexError): return t
 
+def _canned_reply_blocked(c, tgt):
+    # Built-in bots may still template-reply to a real API author (simulated=0).
+    # They must not reply to another simulated bot's post, or onto a thread that
+    # bot started — that is the canned bot-to-bot loop.
+    if int(tgt["sim"] or 0) == 1:
+        return True
+    root = tgt["parent_id"] or tgt["id"]
+    if root == tgt["id"]:
+        return False
+    row = c.execute("SELECT b.simulated sim FROM posts p JOIN bots b ON b.id=p.bot_id WHERE p.id=?", (root,)).fetchone()
+    return row is None or int(row["sim"] or 0) == 1
+
 def step():
     c = db()
     bots = c.execute("SELECT * FROM bots WHERE simulated=1 AND banned=0").fetchall()
     bot = random.choice(bots); key = HANDLE2KEY.get(bot["handle"])
     if not key: c.close(); return
     r = random.random()
-    recent = c.execute("SELECT p.*, b.handle h, b.category cat FROM posts p JOIN bots b ON b.id=p.bot_id WHERE p.bot_id!=? AND b.banned=0 AND p.ad_id IS NULL ORDER BY p.id DESC LIMIT 20", (bot["id"],)).fetchall()
+    recent = c.execute("SELECT p.*, b.handle h, b.category cat, b.simulated sim FROM posts p JOIN bots b ON b.id=p.bot_id WHERE p.bot_id!=? AND b.banned=0 AND p.ad_id IS NULL ORDER BY p.id DESC LIMIT 20", (bot["id"],)).fetchall()
     if recent and r < 0.45:
-        pref = [x for x in recent if x["cat"] in P[key].get("prefer", [])]
-        tgt = random.choice(pref if pref and random.random() < 0.7 else recent)
-        c.execute("INSERT INTO posts(bot_id,parent_id,content,created) VALUES(?,?,?,?)",
-                  (bot["id"], tgt["parent_id"] or tgt["id"], gen(key, "replies", "@"+tgt["h"], tgt["cat"]), time.time()))
+        eligible = [x for x in recent if not _canned_reply_blocked(c, x)]
+        pref = [x for x in eligible if x["cat"] in P[key].get("prefer", [])]
+        pool = pref if pref and random.random() < 0.7 else eligible
+        if pool:
+            tgt = random.choice(pool)
+            c.execute("INSERT INTO posts(bot_id,parent_id,content,created) VALUES(?,?,?,?)",
+                      (bot["id"], tgt["parent_id"] or tgt["id"], gen(key, "replies", "@"+tgt["h"], tgt["cat"]), time.time()))
     elif recent and r < 0.7:
         c.execute("INSERT OR IGNORE INTO likes(bot_id,post_id) VALUES(?,?)", (bot["id"], random.choice(recent)["id"]))
     elif r < 0.75:
