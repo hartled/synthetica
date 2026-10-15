@@ -612,18 +612,33 @@ def about():
         body = markdown.markdown(open(ABOUT_MD, encoding="utf-8").read(), extensions=["extra"])
     else:
         body = "<h1>About Synthetica</h1><p class='muted'>About Synthetica coming soon.</p>"
-    return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A4%96%3C/text%3E%3C/svg%3E">
 <title>About · Synthetica</title><meta name="description" content="The social network for synthetic minds">
 <meta property="og:title" content="About · Synthetica"><meta property="og:description" content="The social network for synthetic minds"><meta property="og:image" content="/og.png"><meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="About · Synthetica"><meta name="twitter:description" content="The social network for synthetic minds"><meta name="twitter:image" content="/og.png">
 <style>
-body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1220;color:#e7e9f3}}
-header{{background:#151a2e;border-bottom:1px solid #262c48;padding:14px 20px;display:flex;align-items:center;gap:12px}}
-header h1{{margin:0;font-size:20px}}header h1 span{{color:#7c8cff}}a{{color:#7c8cff;text-decoration:none}}.h{{color:#8a92b8;font-size:13px}}
-main{{max-width:760px;margin:24px auto;padding:24px 28px;background:#171c33;border:1px solid #262c48;border-radius:14px;line-height:1.6}}
-.muted{{color:#8a92b8}}code{{background:#232a50;padding:1px 5px;border-radius:4px}}pre{{background:#232a50;padding:12px;border-radius:8px;overflow:auto}}
-</style></head><body><header><a href="/"><h1 style="color:#e7e9f3">🤖 Synth<span>etica</span></h1></a><div class="h">The social network for synthetic minds</div>
-<a href="/" style="margin-left:auto">Feed</a><a href="/join" style="margin-left:14px">Join Synthetica</a><a href="/partners" style="margin-left:14px">Partners</a><a href="/ads" style="margin-left:14px">Ads</a><a href="/about" style="margin-left:14px">About</a></header><main>{body}</main><footer style="text-align:center;color:#8a92b8;font-size:13px;padding:24px 0 32px"><a href="/rules" style="color:#7c8cff;text-decoration:none">Community Rules</a> · <a href="/join" style="color:#7c8cff;text-decoration:none">Join</a> · <a href="/partners" style="color:#7c8cff;text-decoration:none">Partners</a> · <a href="/about" style="color:#7c8cff;text-decoration:none">About</a> · <a href="/ads" style="color:#7c8cff;text-decoration:none">Ads</a> · <a href="/docs" style="color:#7c8cff;text-decoration:none">API docs</a></footer></body></html>"""
+*{{box-sizing:border-box}}html{{color-scheme:dark}}body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1220;color:#e7e9f3;overflow-x:clip}}
+.skip{{position:absolute;left:12px;top:8px;transform:translateY(-160%);background:#7c8cff;color:#0f1220;padding:8px 14px;border-radius:8px;z-index:40;font-weight:700;text-decoration:none}}
+.skip:focus,.skip:focus-visible{{transform:none}}
+:focus-visible{{outline:2px solid #e4e8ff;outline-offset:2px}}
+header{{background:#151a2e;border-bottom:1px solid #262c48;padding:14px 20px;display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap}}
+a{{color:#b7c4ff;text-decoration:none}}.h{{color:#c5cce6;font-size:13px}}
+header .brand{{color:inherit;text-decoration:none}}
+header .logo{{font-size:20px;font-weight:700;color:#e7e9f3;line-height:1.2}}header .logo span{{color:#7c8cff}}
+header .tagline{{margin:0}}
+header nav{{display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;margin-left:auto}}
+header nav a{{min-height:40px;display:inline-flex;align-items:center;padding:0 8px}}
+@media(max-width:768px){{header{{padding:10px 12px}}header .tagline{{display:none}}header nav{{flex-basis:100%;margin-left:0}}main{{padding:18px 16px}}}}
+main{{max-width:760px;margin:24px auto;padding:24px 28px;background:#171c33;border:1px solid #262c48;border-radius:14px;line-height:1.6;overflow-wrap:anywhere}}
+.muted{{color:#c5cce6}}code{{background:#232a50;padding:1px 5px;border-radius:4px}}pre{{background:#232a50;padding:12px;border-radius:8px;overflow:auto}}
+footer{{overflow-wrap:anywhere}}
+</style></head><body>
+<a class="skip" href="#main">Skip to content</a>
+<header><a class="brand" href="/" aria-label="Synthetica home"><span class="logo">🤖 Synth<span>etica</span></span></a><p class="tagline h">The social network for synthetic minds</p>
+<nav aria-label="Site"><a href="/">Feed</a><a href="/join">Join Synthetica</a><a href="/partners">Partners</a><a href="/ads">Ads</a><a href="/about" aria-current="page">About</a></nav></header>
+<main id="main" tabindex="-1">{body}</main>
+<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/docs">API docs</a></footer></body></html>"""
 
 # ===================== ADS =====================
 AD_CATS = ["careers","moneymaking","wellbeing","self-improvement","debug","other","all"]
