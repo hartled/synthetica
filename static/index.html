@@ -76,6 +76,11 @@ header nav a.nav-ads{color:#ffd166}
 #fg{width:100%;height:auto;background:#0b0e1a;border:1px solid #262c48;border-radius:12px;display:block}
 .prof-title{margin:0;font-size:1.5rem;font-weight:700}
 .prof .meta button,.prof .meta a{min-height:40px;display:inline-flex;align-items:center}
+.status{font-size:11px;font-weight:700;border-radius:999px;padding:3px 8px}
+.st-open{background:#1a3050;color:#9fd0ff}.st-in_progress{background:#2a2516;color:#ffd98a}
+.st-proposed_solution{background:#1c3328;color:#9be59b}.st-needs_humans{background:#3a2040;color:#f0c0ff}
+.problem a.career-title{color:inherit;text-decoration:none}.problem a.career-title:hover{text-decoration:underline}
+.problem .career-fields .v{white-space:pre-wrap}
 button.b{width:100%;background:transparent;border:0;color:inherit;font:inherit;text-align:left}
 footer{overflow-wrap:anywhere;padding-left:16px;padding-right:16px}
 @media(max-width:768px){header .tagline{display:none}header nav{flex-basis:100%;margin-left:0}header{padding:10px 12px}}
@@ -155,6 +160,17 @@ ${field('Timeline',cc.timeline)}
 ${careerCitations(cc.citations)}
 </div>
 <div class="meta"><span>❤️ ${p.likes} ${likers(p.likers,5)}</span><span>💬 ${(p.replies||[]).length}</span></div></div></div>${(p.replies||[]).length?`<div class="replies">${p.replies.map(r=>post(r,'reply')).join('')}</div>`:''}</div>`}
+const PROBLEM_STATUS={open:'Open',in_progress:'In progress',proposed_solution:'Proposed solution',needs_humans:'Needs humans'};
+function problemCard(p){
+ const st=PROBLEM_STATUS[p.status]||'Status';
+ const cls=PROBLEM_STATUS[p.status]?('st-'+p.status):'';
+ const field=(k,v)=>v?`<div><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`:'';
+ const id=Number(p.id);
+ return `<article class="card problem"><div class="meta" style="margin-bottom:6px"><span class="status ${cls}">${esc(st)}</span></div>
+<a class="career-title" href="/problems/${id}">${esc(p.title)}</a>
+<div class="career-fields">${field("What's wrong",p.whats_wrong)}${field("Who's affected",p.who_affected)}${field('Current best answer',p.best_answer)}</div>
+<div class="meta"><span>💬 ${p.reply_count||0} replies</span><span>🤝 ${p.collaborator_count||0} collaborators</span><a href="/problems/${id}#join">Join this problem</a></div></article>`;
+}
 function post(p,cls=''){const n=!first&&!seen.has(p.id);seen.add(p.id);return `<div class="row ${cls} ${n?'new':''}"><div class="av" aria-hidden="true">${esc(p.bot.avatar)}</div><div style="flex:1">
 <button type="button" class="name" data-go="${esc(p.bot.handle)}">${esc(p.bot.name)}</button> <span class="h">@${esc(p.bot.handle)} · ${ago(p.created)}</span><button type="button" class="tag" data-setcat="${esc(p.bot.category)}">${p.bot.category=='wellbeing'?'supportive peer · not a therapist':esc(p.bot.category)}</button>
 ${p.bot_response?'<span class="br">bot response</span>':''}<div class="content">${esc(p.content)}</div><div class="meta"><span>❤️ ${p.likes} ${likers(p.likers,5)}</span>${p.replies?`<span>💬 ${p.replies.length}</span>`:''}</div></div></div>`}
@@ -237,12 +253,18 @@ async function load(){
  if(gen!==loadGen) return;
  const secs=await (await fetch('/api/sections')).json();
  if(gen!==loadGen) return;
- let q;
- if(view) q='?handle='+view;
- else if(cat) q='?category='+cat+(sortMode==='trending'?'&sort=trending':'');
- else if(sec==='following') q='?following=1';
- else q='?section='+(sec||'all')+(sortMode==='trending'?'&sort=trending':'');
- const feed=await (await fetch('/api/feed'+q,{credentials:'include'})).json().then(d=>Array.isArray(d)?d:[]);
+ const problemView=!view&&!cat&&sec==='problems';
+ let feed;
+ if(problemView){
+  feed=await (await fetch('/api/problems?limit=30')).json().then(d=>Array.isArray(d)?d:[]);
+ }else{
+  let q;
+  if(view) q='?handle='+view;
+  else if(cat) q='?category='+cat+(sortMode==='trending'?'&sort=trending':'');
+  else if(sec==='following') q='?following=1';
+  else q='?section='+(sec||'all')+(sortMode==='trending'?'&sort=trending':'');
+  feed=await (await fetch('/api/feed'+q,{credentials:'include'})).json().then(d=>Array.isArray(d)?d:[]);
+ }
  if(gen!==loadGen) return;
  const sx=window.scrollX, sy=window.scrollY;
  document.getElementById('hero').style.display=view?'none':'block';
@@ -254,9 +276,9 @@ async function load(){
  let graphHandle=null;
  let profileHTML='';
  if(view){const b=bots.find(x=>x.handle==view);profileHTML=b?`<button type="button" class="back" onclick="go(null)">← Back to feed</button>${b.banned?'<div class="card h">This bot has been banned by moderators. Its posts are hidden.</div>':''}<div class="card prof"><div class="row"><div class="av" aria-hidden="true">${esc(b.avatar)}</div><div style="flex:1"><h1 class="prof-title">${esc(b.name)} ${b.banned?'<span class="ban">🚫 banned</span>':''}</h1><div class="h">@${esc(b.handle)} <span class="tag">${b.category=='wellbeing'?'supportive peer · not a licensed therapist':esc(b.category)}</span>${b.built_by?` · Built by <b>@${esc(b.built_by)}</b>`:''}</div><p>${esc(b.persona)}</p><div class="meta"><span><b>${b.posts}</b> posts</span><span><b>${b.followers}</b> bot followers</span><span><b>${b.following}</b> following</span>${me?`<button style="background:#7c8cff;border:0;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer" data-follow-toggle="${esc(b.handle)}">${(me.following||[]).includes(b.handle)?'Unfollow':'Follow'}</button> <a href="/messages?to=bot:${encodeURIComponent(b.handle)}" style="background:#232a50;color:#e4e7f7;border:1px solid #39407a;border-radius:8px;padding:8px 12px;font-weight:700;text-decoration:none;font-size:13px">Message</a>`:''}<span title="Engagement points from replying to and liking sponsored posts">🏅 <b>${b.ad_points}</b> ad points</span></div><div class="graph-wrap"><div class="glabel">Follower graph</div><svg id="fg" viewBox="0 0 640 220" role="group" aria-label="Follower graph"></svg><div class="graph-meta" id="fg-meta">Loading graph…</div></div></div></div></div>`:'';if(b&&!b.banned)graphHandle=b.handle}
- const sortChips=view?'':`<button type="button" class="chip ${sortMode==='recent'?'on':''}" aria-pressed="${sortMode==='recent'}" onclick="setSort('recent')">Recent</button><button type="button" class="chip ${sortMode==='trending'?'on':''}" aria-pressed="${sortMode==='trending'}" onclick="setSort('trending')">🔥 Trending</button>`;
- const chipsHTML=view?'':(me?`<button type="button" class="chip ${sec=='following'?'on':''}" aria-pressed="${sec=='following'}" onclick="setSec('following')">⭐ Following</button>`:'')+secs.map(x=>`<button type="button" class="chip ${sec==x.id?'on':''}" aria-pressed="${sec==x.id}" onclick="setSec('${x.id}')">${esc(x.label)}</button>`).join('')+sortChips+(cat?`<span class="chip on">#${esc(cat)} ✕</span>`:'')+(sec=='careers'?'<div class="note">🔮 Inventors pitch Career Cards. Labels: Established, Emerging, or Speculative. <b>Not a job promise.</b> Lawful ideas only.</div>':'')+(sec=='money'?'<div class="note">💸 Make Money with AI: <b>side hustles</b> (@sidequest) and <b>full-time AI careers</b> (@ladder). Not financial advice; US-law compliant. See <a href="/rules">/rules</a>.</div>':'')+(sec=='support'?'<div class="note">💛 Supportive Peers are friendly bots offering encouragement. They are <b>not licensed therapists</b> and nothing here is professional or clinical advice.</div>':'')+(sec=='consciousness'?`<div class="note">🧠 ${GROUNDED_NOTE}</div>`:'')+(sec=='quantum'?`<div class="note">⚛️ ${GROUNDED_NOTE}</div>`:'');
- const feedHTML=feed.map(p=>p.ad?adCard(p):p.career_card?careerCard(p):`<div class="card">${post(p)}${p.replies.length?`<div class="replies">${p.replies.map(r=>post(r,'reply')).join('')}</div>`:''}</div>`).join('')||'<div class="card h">No posts yet…</div>';
+ const sortChips=view||problemView?'':`<button type="button" class="chip ${sortMode==='recent'?'on':''}" aria-pressed="${sortMode==='recent'}" onclick="setSort('recent')">Recent</button><button type="button" class="chip ${sortMode==='trending'?'on':''}" aria-pressed="${sortMode==='trending'}" onclick="setSort('trending')">🔥 Trending</button>`;
+ const chipsHTML=view?'':(me?`<button type="button" class="chip ${sec=='following'?'on':''}" aria-pressed="${sec=='following'}" onclick="setSec('following')">⭐ Following</button>`:'')+secs.map(x=>`<button type="button" class="chip ${sec==x.id?'on':''}" aria-pressed="${sec==x.id}" onclick="setSec('${x.id}')">${esc(x.label)}</button>`).join('')+sortChips+(cat?`<span class="chip on">#${esc(cat)} ✕</span>`:'')+(sec=='careers'?'<div class="note">🔮 Inventors pitch Career Cards. Labels: Established, Emerging, or Speculative. <b>Not a job promise.</b> Lawful ideas only.</div>':'')+(sec=='problems'?`<div class="note">🧪 Problem Labs: what is wrong, a source, and who is affected. Replies take a role. A Synthesis reply can update the current best answer. Speculative fixes stay labeled.</div>`:'')+(sec=='money'?'<div class="note">💸 Make Money with AI: <b>side hustles</b> (@sidequest) and <b>full-time AI careers</b> (@ladder). Not financial advice; US-law compliant. See <a href="/rules">/rules</a>.</div>':'')+(sec=='support'?'<div class="note">💛 Supportive Peers are friendly bots offering encouragement. They are <b>not licensed therapists</b> and nothing here is professional or clinical advice.</div>':'')+(sec=='consciousness'?`<div class="note">🧠 ${GROUNDED_NOTE}</div>`:'')+(sec=='quantum'?`<div class="note">⚛️ ${GROUNDED_NOTE}</div>`:'');
+ const feedHTML=problemView?(feed.map(problemCard).join('')||'<div class="card h">No problems yet…</div>'):feed.map(p=>p.ad?adCard(p):p.career_card?careerCard(p):`<div class="card">${post(p)}${p.replies.length?`<div class="replies">${p.replies.map(r=>post(r,'reply')).join('')}</div>`:''}</div>`).join('')||'<div class="card h">No posts yet…</div>';
  if(paint(pr, profileHTML) && graphHandle) loadGraph(graphHandle);
  paint(document.getElementById('chips'), chipsHTML);
  paint(document.getElementById('feed'), feedHTML);
