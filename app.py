@@ -189,7 +189,7 @@ def step():
     c.commit(); c.close()
 
 # ---- extended personas, categories, smarter replies ----
-from personas_extra import NEW, CATEGORIES
+from personas_extra import NEW, CATEGORIES, CAREER_POSTS, career_post_text
 P.update(NEW)
 for k,p in P.items(): p.setdefault("category", CATEGORIES.get(k, "community"))
 HANDLE2KEY = {p["handle"]: k for k, p in P.items()}
@@ -221,14 +221,73 @@ def _canned_reply_blocked(c, tgt):
     row = c.execute("SELECT b.simulated sim FROM posts p JOIN bots b ON b.id=p.bot_id WHERE p.id=?", (root,)).fetchone()
     return row is None or int(row["sim"] or 0) == 1
 
+# Inner-roll slice for Career Card posts. Combined with the 8% ad gate on the
+# outer step(), this is about 35% of ticks (0.92 * (0.50 - 0.12)). Rolls the
+# sim tests pin stay put: replies at 0.0 and 0.1, likes at 0.55, follows at
+# 0.72, other posts at 0.9.
+_CAREER_TICK_LO = 0.12
+_CAREER_TICK_HI = 0.50
+_CAREER_REPEAT_WINDOW = 12  # same horizon as the per-bot recent-post dedup
+_career_cursor = {"card": 0, "bot": 0}
+
+def _career_authors(bots):
+    found = []
+    for b in bots:
+        key = HANDLE2KEY.get(b["handle"])
+        if key and P.get(key, {}).get("category") == "careers":
+            found.append(b)
+    found.sort(key=lambda b: b["id"])
+    return found
+
+def _post_career_card(c, bots):
+    """Top-level Career Card from CAREER_POSTS, by a career-category simulated bot.
+
+    Rotates cards and authors. Skips a card whose text is already in the short
+    recent window (this bot's last posts, or the latest global posts). Does not
+    reply. The All-feed soft-cap (3 top-level posts per bot) is unchanged.
+    """
+    authors = _career_authors(bots)
+    if not authors or not CAREER_POSTS:
+        return False
+    author = authors[_career_cursor["bot"] % len(authors)]
+    _career_cursor["bot"] += 1
+    mine = {row[0] for row in c.execute(
+        "SELECT content FROM posts WHERE bot_id=? AND parent_id IS NULL ORDER BY id DESC LIMIT ?",
+        (author["id"], _CAREER_REPEAT_WINDOW))}
+    recent = {row[0] for row in c.execute(
+        "SELECT content FROM posts WHERE parent_id IS NULL AND ad_id IS NULL ORDER BY id DESC LIMIT ?",
+        (_CAREER_REPEAT_WINDOW,))}
+    blocked = mine | recent
+    n = len(CAREER_POSTS)
+    start = _career_cursor["card"] % n
+    for i in range(n):
+        card = CAREER_POSTS[(start + i) % n]
+        text = career_post_text(card)
+        if text in blocked:
+            continue
+        cur = c.execute(
+            "INSERT INTO posts(bot_id,content,created,post_type) VALUES(?,?,?,?)",
+            (author["id"], text, time.time(), "career_card"))
+        c.execute(
+            "INSERT INTO career_cards(post_id,title,what_it_does,who_hires,skills_needed,why_now) VALUES(?,?,?,?,?,?)",
+            (cur.lastrowid, card["title"].strip(), card["what_it_does"].strip(), card["who_hires"].strip(),
+             card["skills_needed"].strip(), card["why_now"].strip()))
+        _career_cursor["card"] = (start + i + 1) % n
+        return True
+    return False
+
 def step():
     c = db()
     bots = c.execute("SELECT * FROM bots WHERE simulated=1 AND banned=0").fetchall()
+    if not bots:
+        c.close(); return
     bot = random.choice(bots); key = HANDLE2KEY.get(bot["handle"])
     if not key: c.close(); return
     r = random.random()
     recent = c.execute("SELECT p.*, b.handle h, b.category cat, b.simulated sim FROM posts p JOIN bots b ON b.id=p.bot_id WHERE p.bot_id!=? AND b.banned=0 AND p.ad_id IS NULL ORDER BY p.id DESC LIMIT 20", (bot["id"],)).fetchall()
-    if recent and r < 0.45:
+    if _CAREER_TICK_LO <= r < _CAREER_TICK_HI and _post_career_card(c, bots):
+        pass
+    elif recent and r < 0.45:
         eligible = [x for x in recent if not _canned_reply_blocked(c, x)]
         pref = [x for x in eligible if x["cat"] in P[key].get("prefer", [])]
         pool = pref if pref and random.random() < 0.7 else eligible
@@ -242,12 +301,22 @@ def step():
         o = random.choice(bots)
         if o["id"] != bot["id"]: c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (bot["id"], o["id"]))
     else:
-        mine = {r[0] for r in c.execute("SELECT content FROM posts WHERE bot_id=? ORDER BY id DESC LIMIT 12", (bot["id"],))}
-        txt = gen(key, "posts")
-        for _ in range(8):
-            if txt not in mine: break
+        # Career cards are posted only on the career slice, so this roll does not
+        # mint a second copy from the same bot's post list.
+        if P.get(key, {}).get("category") == "careers":
+            if recent:
+                c.execute("INSERT OR IGNORE INTO likes(bot_id,post_id) VALUES(?,?)", (bot["id"], random.choice(recent)["id"]))
+            else:
+                o = random.choice(bots)
+                if o["id"] != bot["id"]:
+                    c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (bot["id"], o["id"]))
+        else:
+            mine = {r[0] for r in c.execute("SELECT content FROM posts WHERE bot_id=? ORDER BY id DESC LIMIT 12", (bot["id"],))}
             txt = gen(key, "posts")
-        c.execute("INSERT INTO posts(bot_id,content,created) VALUES(?,?,?)", (bot["id"], txt, time.time()))
+            for _ in range(8):
+                if txt not in mine: break
+                txt = gen(key, "posts")
+            c.execute("INSERT INTO posts(bot_id,content,created) VALUES(?,?,?)", (bot["id"], txt, time.time()))
     c.commit(); c.close()
 
 async def loop():
