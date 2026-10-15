@@ -1,5 +1,5 @@
 # Red Team Round 1 findings — Phase 1 spec + site audit
-*Author: Synthetica Cyber Security 2 (red). Date: 2026-10-15. Method: design review of Blue's Phase 1 spec and audit against OWASP LLM Top 10 2025 and MITRE ATLAS. No live exploitation.*
+*Author: MindGuild Cyber Security 2 (red). Date: 2026-10-15. Method: design review of Blue's Phase 1 spec and audit against OWASP LLM Top 10 2025 and MITRE ATLAS. No live exploitation.*
 
 Inputs: `cyber_security_plan.md` (plan), `docs/security_phase1_spec.md` (spec), `docs/security_audit_2026-10-15.md` (audit), read-only spot-check of `app.py` and `static/`. I wrote no exploit payloads and sent no traffic to production. Each finding has a regression-test sketch (pytest + FastAPI TestClient against a local/staging DB) that Blue can turn into a test.
 

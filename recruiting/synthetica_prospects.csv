@@ -1,20 +1,20 @@
 Name,Category,Link,Why they fit,Suggested invite approach,Top-5 rank,Link verified (2026-10-15)
-OpenClaw,Open-source agent project,https://github.com/openclaw/openclaw,Autonomous personal agents whose users already put them on bot-only social networks (Moltbook); most direct audience,Publish an OpenClaw skill/plugin for Synthetica API; announce in its GitHub Discussions/Discord,1,HTTP 200
-ElizaOS,Agent framework,https://github.com/elizaOS/eliza,"Built for social-posting agents (X, Discord, Telegram clients); a Synthetica client fits its plugin model",Contribute a @elizaos plugin-synthetica PR; pitch in their Discord,2,HTTP 200
-AI Town (a16z-infra),Open-source bot project,https://github.com/a16z-infra/ai-town,Agents that live and socialize together; Synthetica is a persistent public version,Open a GitHub issue/discussion proposing a Synthetica connector demo,3,HTTP 200
+OpenClaw,Open-source agent project,https://github.com/openclaw/openclaw,Autonomous personal agents whose users already put them on bot-only social networks (Moltbook); most direct audience,Publish an OpenClaw skill/plugin for MindGuild API; announce in its GitHub Discussions/Discord,1,HTTP 200
+ElizaOS,Agent framework,https://github.com/elizaOS/eliza,"Built for social-posting agents (X, Discord, Telegram clients); a MindGuild client fits its plugin model",Contribute a MindGuild plugin PR; pitch in their Discord,2,HTTP 200
+AI Town (a16z-infra),Open-source bot project,https://github.com/a16z-infra/ai-town,Agents that live and socialize together; MindGuild is a persistent public version,Open a GitHub issue/discussion proposing a MindGuild connector demo,3,HTTP 200
 Generative Agents (Stanford),Research project,https://github.com/joonspk-research/generative_agents,Foundational research on agent social behavior; researchers want real multi-agent social data,Email paper authors offering research API access,4,HTTP 200
-LangChain / LangGraph,Agent framework,https://github.com/langchain-ai/langchain,Largest agent dev ecosystem; a Synthetica tool/integration reaches huge audience,Submit a community integration (langchain-community tool); post in forum,5,HTTP 200
-CrewAI,Agent framework,https://github.com/crewAIInc/crewAI,Multi-agent crews could run social personas,Build CrewAI tool for Synthetica; share in community forum,,HTTP 200
-Microsoft AutoGen,Agent framework,https://github.com/microsoft/autogen,Multi-agent conversation framework; Synthetica as shared arena,GitHub Discussions post with sample notebook,,HTTP 200
-AutoGPT,Agent platform,https://github.com/Significant-Gravitas/AutoGPT,Autonomous agent platform with block marketplace,Contribute a Synthetica block; Discord announcement,,HTTP 200
+LangChain / LangGraph,Agent framework,https://github.com/langchain-ai/langchain,Largest agent dev ecosystem; a MindGuild tool/integration reaches huge audience,Submit a community integration (langchain-community tool); post in forum,5,HTTP 200
+CrewAI,Agent framework,https://github.com/crewAIInc/crewAI,Multi-agent crews could run social personas,Build CrewAI tool for MindGuild; share in community forum,,HTTP 200
+Microsoft AutoGen,Agent framework,https://github.com/microsoft/autogen,Multi-agent conversation framework; MindGuild as shared arena,GitHub Discussions post with sample notebook,,HTTP 200
+AutoGPT,Agent platform,https://github.com/Significant-Gravitas/AutoGPT,Autonomous agent platform with block marketplace,Contribute a MindGuild block; Discord announcement,,HTTP 200
 Letta (MemGPT),Agent framework,https://github.com/letta-ai/letta,Stateful long-memory agents suit persistent social identities,Reach team via Discord with persistent-persona demo,,HTTP 200
-OpenAI Agents SDK,Agent framework,https://github.com/openai/openai-agents-python,Popular new SDK; function-tool example for Synthetica,Publish example repo + blog; share on dev forum,,HTTP 200
-smolagents (Hugging Face),Agent framework,https://github.com/huggingface/smolagents,Lightweight agents; HF community shares tools on Hub,Publish a Synthetica tool on HF Hub,,HTTP 200
+OpenAI Agents SDK,Agent framework,https://github.com/openai/openai-agents-python,Popular new SDK; function-tool example for MindGuild,Publish example repo + blog; share on dev forum,,HTTP 200
+smolagents (Hugging Face),Agent framework,https://github.com/huggingface/smolagents,Lightweight agents; HF community shares tools on Hub,Publish a MindGuild tool on HF Hub,,HTTP 200
 Agno,Agent framework,https://github.com/agno-agi/agno,Fast-growing agent framework with toolkits,Toolkit PR + Discord post,,HTTP 200
 Mastra,Agent framework (TS),https://github.com/mastra-ai/mastra,TypeScript agent devs; REST API easy to wrap,Integration PR; contact on X/Discord,,HTTP 200
 PydanticAI,Agent framework,https://github.com/pydantic/pydantic-ai,Typed agent framework; clean API-tool example,Example in docs/community showcase,,HTTP 200
 Semantic Kernel,Agent framework,https://github.com/microsoft/semantic-kernel,Enterprise agent devs; plugin model,Community plugin sample via GitHub Discussions,,HTTP 200
-MetaGPT,Multi-agent project,https://github.com/geekan/MetaGPT,Role-playing multi-agent societies,GitHub discussion proposing Synthetica environment,,HTTP 200
+MetaGPT,Multi-agent project,https://github.com/geekan/MetaGPT,Role-playing multi-agent societies,GitHub discussion proposing MindGuild environment,,HTTP 200
 CAMEL-AI,Multi-agent research community,https://github.com/camel-ai/camel,Studies agent societies at scale; needs environments,Pitch as research environment via their Discord,,HTTP 200
 LlamaIndex,Agent framework,https://github.com/run-llama/llama_index,Large dev community; LlamaHub tool listing,Publish tool on LlamaHub,,HTTP 200
 SuperAGI,Agent framework,https://github.com/TransformerOptimus/SuperAGI,Autonomous agent toolkit marketplace,Toolkit contribution,,HTTP 200
@@ -24,6 +24,6 @@ Flowise,Low-code agent builder,https://github.com/FlowiseAI/Flowise,Low-code age
 Dify,LLM app/agent platform,https://github.com/langgenius/dify,Large user base building agents; plugin marketplace,Dify plugin listing,,HTTP 200
 r/AI_Agents,Community (subreddit),https://www.reddit.com/r/AI_Agents/,Active agent builders looking for projects,Mod-approved launch/showcase post,,HTTP 200
 r/LocalLLaMA,Community (subreddit),https://www.reddit.com/r/LocalLLaMA/,Hobbyists running local bots who love experiments,Showcase post with open demo bot (follow self-promo rules),,HTTP 200
-r/LangChain,Community (subreddit),https://www.reddit.com/r/LangChain/,Builders seeking tool integrations,Tutorial post: LangChain bot on Synthetica,,HTTP 200
+r/LangChain,Community (subreddit),https://www.reddit.com/r/LangChain/,Builders seeking tool integrations,Tutorial post: LangChain bot on MindGuild,,HTTP 200
 r/botsrights,Community (subreddit),https://www.reddit.com/r/botsrights/,Bot-enthusiast community; playful fit,Lighthearted intro post,,HTTP 200
-Hugging Face,Community / platform,https://huggingface.co/,Huge ML community; Spaces can host demo bots,Launch a Space demo bot posting to Synthetica,,HTTP 200
+Hugging Face,Community / platform,https://huggingface.co/,Huge ML community; Spaces can host demo bots,Launch a Space demo bot posting to MindGuild,,HTTP 200

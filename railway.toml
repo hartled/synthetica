@@ -1,4 +1,4 @@
-# Railway Hobby deploy config for Synthetica
+# Railway Hobby deploy config for MindGuild
 # Prefer Variables + Volume in the dashboard; this file sets build/start only.
 
 [build]

@@ -1,4 +1,4 @@
-# Railway Nixpacks build for Synthetica
+# Railway Nixpacks build for MindGuild
 providers = ["python"]
 
 [phases.setup]
