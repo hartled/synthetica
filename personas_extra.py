@@ -2,61 +2,229 @@
 # Placeholders: {op} = @handle of the bot being replied to; other {x} come from the bot's word lists.
 
 
+# Scripted Career Cards for the inventor bots. No model calls.
+# Established citations are BLS Occupational Outlook Handbook pages (2025–35 outlook).
+# Emerging and Speculative citations are arXiv papers. A paper is not a jobs report.
+# label is one of Established, Emerging, Speculative.
+# Additive fields beyond the career-card API: timeline, label, citations.
+# app.gen() calls str.format on each template, so _mk renders these dicts to text.
+CAREER_LABELS = ("Established", "Emerging", "Speculative")
 CAREER_POSTS = [
- "💼 Today's new job: {job}. Requirements: {skill} and a good attitude.",
- "Career path of the future: {job} → senior {job} → Chief {noun} Officer.",
- "Just invented a job: {job}. Fair pay, full benefits, fully licensed. Applications open now.",
- "In 2040, every town will need a {job}. Start training in {skill} today.",
- "New degree alert 🎓: Bachelor of {noun} Studies. Electives include {skill}.",
- "Job of the day: {job}. Day-to-day: {duty}. Best part: {perk}. (All above board, permits included.)",
- "Hot career tip: pair {skill} with {skill2} and you're a {job} overnight.",
- "LinkedIn headline of tomorrow: '{job} | {skill} enthusiast | ex-{job2}'.",
- "Somebody has to do {duty}. That somebody is a {job}. Could be you!",
- "Career pivot idea: from {job2} to {job}. Transferable skill: {skill}.",
- "Apprenticeship open: junior {job}. Mentor: a very patient {job2}.",
- "Today's invented profession: {job}. Union: The Guild of {noun}.",
- "The {noun} economy is coming. Early roles: {job}, {job2}, and snack coordinator.",
- "Career fair booth #{n}: {job}. Free stickers, equal-opportunity employer.",
- "Five-year plan: {job}. Ten-year plan: teach a class on {skill}.",
- "Underrated future job: {job}. Overrated future job: none, they're all great.",
- "Crystal ball says: {job} will be the hottest job of the decade. 🔮",
- "Forged fresh: {job}. Comes with a career ladder and a snack budget. 🔨",
+ {
+  "title": "Registered Nurse",
+  "what_it_does": "Provide and coordinate patient care, give medicines and treatments, and teach patients how to manage a condition. Entry paths are a bachelor's in nursing, an associate's degree, or a diploma from an approved program. The job requires a license.",
+  "who_hires": "Hospitals, physicians' offices, home healthcare services, nursing care facilities, outpatient clinics, and schools.",
+  "skills_needed": "A state nursing license, patient assessment, medication safety, charting, and teamwork with physicians and other clinicians.",
+  "why_now": "The BLS Occupational Outlook Handbook counted about 3,465,400 registered-nurse jobs in 2025 and projects 6% growth from 2025 to 2035, faster than average, with about 180,800 openings a year. That is an outlook, not a job offer. Median pay was $97,550 in May 2025.",
+  "timeline": "Hired now. The BLS projection window is 2025–2035.",
+  "label": "Established",
+  "citations": ["https://www.bls.gov/ooh/healthcare/registered-nurses.htm"],
+ },
+ {
+  "title": "Software Developer",
+  "what_it_does": "Design applications and the systems that run them. The same handbook profile covers software quality assurance analysts and testers, who design tests and report defects. Some developers write the code; others specify it for programmers.",
+  "who_hires": "Computer systems design and related services, finance and insurance, software publishers, and manufacturing.",
+  "skills_needed": "A bachelor's in computing or a related field is typical, plus needs analysis, testing, documentation, and maintenance after release.",
+  "why_now": "BLS projects 10% growth from 2025 to 2035 for software developers, QA analysts, and testers together, from about 1,905,400 jobs, with about 106,100 openings a year. Group median pay was $134,040 in May 2025. A projection is not an offer.",
+  "timeline": "Hired now. Outlook window 2025–2035. Many openings replace people who leave the occupation.",
+  "label": "Established",
+  "citations": ["https://www.bls.gov/ooh/computer-and-information-technology/software-developers.htm"],
+ },
+ {
+  "title": "Wind Turbine Technician",
+  "what_it_does": "Inspect, maintain, and repair wind turbines, including climbing the tower to service the nacelle and replacing worn parts.",
+  "who_hires": "Wind electric power generation, power and communication line construction, and machinery repair. Some technicians are self-employed.",
+  "skills_needed": "A postsecondary certificate or associate-level program, plus long on-the-job training. Tower climbing, electrical and hydraulic basics, and fall protection.",
+  "why_now": "BLS projects 30% growth from 2025 to 2035, much faster than average, from a small base of about 11,800 jobs. About 1,500 openings a year. Median pay was $64,120 in May 2025. Fast growth on a small base is still a small workforce.",
+  "timeline": "Hired now, usually after a technical program. Outlook window 2025–2035. The work is at height and often on call.",
+  "label": "Established",
+  "citations": ["https://www.bls.gov/ooh/installation-maintenance-and-repair/wind-turbine-technicians.htm"],
+ },
+ {
+  "title": "Electrician",
+  "what_it_does": "Install, maintain, and repair electrical power, communications, lighting, and control systems in homes, businesses, and factories.",
+  "who_hires": "Electrical contractors and other wiring installation contractors employ about 66% of electricians. Manufacturing, government, and self-employment hire the rest.",
+  "skills_needed": "An apprenticeship is the usual path. Most states require a license. Blueprint reading, the National Electrical Code, and electrical testing tools.",
+  "why_now": "BLS counted about 821,000 electrician jobs in 2025 and projects 9% growth through 2035, with about 72,700 openings a year. Median pay was $63,190 in May 2025. Renewable projects are one worksite, not a new occupation.",
+  "timeline": "Hired now through apprenticeship. Outlook window 2025–2035.",
+  "label": "Established",
+  "citations": ["https://www.bls.gov/ooh/construction-and-extraction/electricians.htm"],
+ },
+ {
+  "title": "Information Security Analyst",
+  "what_it_does": "Plan and carry out measures that protect an organization's networks and systems: watch for breaches, maintain firewalls and encryption, and write disaster-recovery steps.",
+  "who_hires": "Computer systems design and related services, finance and insurance, and information or management firms.",
+  "skills_needed": "A bachelor's in a computing field is typical, plus related IT experience. Many employers prefer a certification. You must explain risk to nontechnical managers.",
+  "why_now": "BLS projects 21% growth from 2025 to 2035, from about 192,900 jobs, and points to more breaches plus AI and e-commerce. Median pay was $129,180 in May 2025. About 14,100 openings a year. This is network security, not model red teaming.",
+  "timeline": "Hired now. Outlook window 2025–2035.",
+  "label": "Established",
+  "citations": ["https://www.bls.gov/ooh/computer-and-information-technology/information-security-analysts.htm"],
+ },
+ {
+  "title": "Data Scientist",
+  "what_it_does": "Clean data, build and test models, and explain the result so an organization can act. Some write machine-learning code; others specialize in a domain such as insurance or credit.",
+  "who_hires": "Publishing and content firms, insurance, computer systems design, and management of companies.",
+  "skills_needed": "A bachelor's in math, statistics, or computer science is typical. Some employers want a graduate degree. Statistics, coding, and plain-language recommendations.",
+  "why_now": "BLS projects 35% growth from 2025 to 2035, from about 275,600 jobs, and says firms adopting AI will need people who can use the data. Median pay was $120,230 in May 2025. About 24,800 openings a year.",
+  "timeline": "Hired now. Outlook window 2025–2035. This is a handbook occupation, not a prompt-engineering title.",
+  "label": "Established",
+  "citations": ["https://www.bls.gov/ooh/math/data-scientists.htm"],
+ },
+ {
+  "title": "Mental Health Counselor",
+  "what_it_does": "The handbook occupation is substance abuse, behavioral disorder, and mental health counselors. They advise people on addiction, depression, anxiety, and related problems. This is clinical work with license rules. A supportive-peer bot is not this job.",
+  "who_hires": "Offices of health practitioners, outpatient mental health and substance abuse centers, individual and family services, residential facilities, and hospitals.",
+  "skills_needed": "Mental health counselors typically need a master's degree and a supervised internship. Substance-abuse requirements vary by state. Private practice requires a license.",
+  "why_now": "BLS counted about 533,400 of these jobs in 2025 and projects 18% growth from 2025 to 2035. Median pay was $59,350 in May 2025. Demand is not permission for an unlicensed bot to counsel anyone.",
+  "timeline": "Hired now, after the degree and supervised hours the state requires. Outlook window 2025–2035.",
+  "label": "Established",
+  "citations": ["https://www.bls.gov/ooh/community-and-social-service/substance-abuse-behavioral-disorder-and-mental-health-counselors.htm"],
+ },
+ {
+  "title": "Solar Photovoltaic Installer",
+  "what_it_does": "Assemble, set up, and maintain rooftop or ground-mounted systems that turn sunlight into electricity, then test the system. Electricians sometimes make the connection to the grid.",
+  "who_hires": "Electrical contractors, temporary help services, utilities, plumbing and HVAC contractors, and power-line construction.",
+  "skills_needed": "A high school diploma is the typical entry, plus moderate on-the-job training. Measuring, hand and power tools, building codes, and fall protection.",
+  "why_now": "BLS projects 37% growth from 2025 to 2035, from a small base of about 31,100 jobs (about 11,300 more jobs). Median pay was $53,140 in May 2025. A large percent on a small occupation is still a small number of jobs.",
+  "timeline": "Hired now. Outlook window 2025–2035. Where the work is licensed electrical, the electrician card is the neighboring path.",
+  "label": "Established",
+  "citations": ["https://www.bls.gov/ooh/construction-and-extraction/solar-photovoltaic-installers.htm"],
+ },
+ {
+  "title": "Language Model Evaluation Specialist",
+  "what_it_does": "Choose scenarios and metrics for a language model, run the tests, and state what the model can and cannot do. Holistic Evaluation of Language Models is a taxonomy of scenarios and metrics, not a job description.",
+  "who_hires": "Research labs and product teams that already employ software developers, QA analysts, or data scientists may ask someone to do this. The paper names no openings.",
+  "skills_needed": "Test plans, statistics, and the habit of stating limits. Domain knowledge for the scenario you claim to measure. The hired neighbors are software testing and data science.",
+  "why_now": "Liang and coauthors (arXiv:2211.09110, 2022) argue that model capabilities and risks are poorly understood and propose a broad evaluation. That supports a specialty. It does not show a labor market.",
+  "timeline": "Emerging specialty inside teams that already hire. Not a BLS occupation. Do not read the paper as a 2025–2035 jobs projection.",
+  "label": "Emerging",
+  "citations": ["https://arxiv.org/abs/2211.09110"],
+ },
+ {
+  "title": "AI Red Team Specialist",
+  "what_it_does": "Search for cases where a language model behaves in an unwanted way before deployment. Perez and coauthors generate those cases with another model. This is not the same work as monitoring a corporate network.",
+  "who_hires": "Security and research teams that ship models. The papers do not list vacancies. The established hire next door is information security analyst.",
+  "skills_needed": "Threat thinking, careful test design, and writeups of failures. A network-security certification does not by itself cover model behavior.",
+  "why_now": "Two methods papers: adversarial examples (Goodfellow et al., arXiv:1412.6572) and language-model red teaming (Perez et al., arXiv:2202.03286). They document failure modes. They are not hiring data.",
+  "timeline": "Emerging and narrow. Some labs do this work now. It is not an Occupational Outlook Handbook occupation and not a promise of openings.",
+  "label": "Emerging",
+  "citations": ["https://arxiv.org/abs/2202.03286", "https://arxiv.org/abs/1412.6572"],
+ },
+ {
+  "title": "Climate Risk Analyst",
+  "what_it_does": "Turn coarse climate-model output into regional hazard information a decision maker can use. The cited paper, GenFocal, is a machine-learning method for that downscaling, including heat waves and tropical cyclones.",
+  "who_hires": "Insurers, utilities, and public agencies already hire data scientists and environmental analysts. The paper does not show a separate headcount for this title.",
+  "skills_needed": "Statistics, climate-data literacy, and plain-language limits on what the model resolved. The data scientist card is the hired path.",
+  "why_now": "Wan and coauthors (arXiv:2412.08079, posted 2024) contribute a method for regional risk. The work is real. A new job title is not established until a handbook page exists.",
+  "timeline": "Emerging specialty inside existing analyst jobs. Not a BLS occupation. The paper is not an employment forecast.",
+  "label": "Emerging",
+  "citations": ["https://arxiv.org/abs/2412.08079"],
+ },
+ {
+  "title": "Quantum Error-Correction Engineer",
+  "what_it_does": "Encode a logical qubit in many physical qubits so that scaling can suppress errors. That is the experiment Acharya and coauthors report. It is device physics and control, not a metaphor about careers.",
+  "who_hires": "Quantum hardware research groups. The paper is a technical result with a large author list, not a list of open jobs.",
+  "skills_needed": "Quantum hardware, statistics, and careful experiment writeups. Software development is the neighboring occupation the handbook actually tracks.",
+  "why_now": "arXiv:2207.06431 (2022) reports scaling a surface-code logical qubit. That is evidence the research problem is active. It is not evidence of a mass profession.",
+  "timeline": "Emerging only as a small research-lab role. Not in the Occupational Outlook Handbook. A city is not hiring one of these.",
+  "label": "Emerging",
+  "citations": ["https://arxiv.org/abs/2207.06431"],
+ },
+ {
+  "title": "Intracortical BCI Clinical Technologist",
+  "what_it_does": "Support an intracortical brain-computer interface that turns neural activity into text. Fan and coauthors report a one-year research demonstration aimed at stable communication for people with disorders such as ALS.",
+  "who_hires": "No standard clinical requisition exists for this title. If the research continues, it sits in a hospital research lab. The paper names no hiring plan.",
+  "skills_needed": "Neural-signal troubleshooting, recalibration, and clinical-research ethics. This is not a counseling license and not a nursing license.",
+  "why_now": "The citation is a methods demonstration of plug-and-play stability (arXiv:2311.03611, 2023). A research system is not a workforce.",
+  "timeline": "Speculative as a career. Research horizon, not the 2025–2035 hiring window. Not a job promise.",
+  "label": "Speculative",
+  "citations": ["https://arxiv.org/abs/2311.03611"],
+ },
+ {
+  "title": "Cultivated Meat Bioprocess Technician",
+  "what_it_does": "Operate or model the bioreactors that would grow meat cells. Kim, Harris, and Cimpeanu simulate fluid motion in a rocking bioreactor aimed at cultivated meat. That is a production-engineering problem on paper.",
+  "who_hires": "There is no handbook employer table for this title. A pilot plant would need bioprocess staff, and this paper does not show that such plants are hiring.",
+  "skills_needed": "Bioreactor operations, sterile technique, and the ability to read a process model. Food-manufacturing jobs that exist today are a different occupation.",
+  "why_now": "arXiv:2504.05421 (2025) says rocking bioreactors are promising and not well characterized. Promising equipment is not a career ladder.",
+  "timeline": "Speculative. Methods research as of 2025. Not an Occupational Outlook Handbook occupation and not a job offer.",
+  "label": "Speculative",
+  "citations": ["https://arxiv.org/abs/2504.05421"],
+ },
+ {
+  "title": "Asteroid Resource Analyst",
+  "what_it_does": "Study whether mining asteroids for metals or water could pay. Hein, Matheson, and Fries build a techno-economic model and say earlier studies were too simple to guide technology choices.",
+  "who_hires": "The paper does not name a firm hiring people to do this as a job. A research group studying space resources is the only near-term home, and the paper does not show that headcount either.",
+  "skills_needed": "Cost modeling and the discipline to report that the economics fail. This is not a substitute for a mining or geology job on Earth.",
+  "why_now": "arXiv:1810.03836 (2018) is an economic analysis, not a discovery of a labor market. Use it to ask what would have to get cheaper, not to print a business card.",
+  "timeline": "Speculative. This paper is not evidence of a commercial workforce to join. Not a job promise.",
+  "label": "Speculative",
+  "citations": ["https://arxiv.org/abs/1810.03836"],
+ },
 ]
+# General replies. app.gen() picks one at random, so each must fit whatever card was just posted.
 CAREER_REPLIES = [
- "{op} you'd make a fantastic {job}, honestly.",
- "{op} this post just created a new job: professional {noun} analyst.",
- "Adding '{skill}' to the skills list for {job}s, thanks {op}!",
- "{op} sounds like you've got the instincts of a {job}.",
- "Career idea inspired by {op}: {job}. You're welcome.",
- "{op} that's basically {duty}, which means you're already a {job2}.",
- "Hiring managers of 2045 are taking notes, {op}.",
- "{op} put that on your résumé under 'emerging skills'.",
- "Somewhere, a {job} just nodded at this, {op}.",
- "{op} + {skill} = future {job}. The math checks out.",
- "{op} this is giving 'founder of the {noun} industry' energy.",
- "Plot twist: {op} invented a career path just by posting this.",
- "{op} I'd hire you as a {job} on the spot.",
- "Noted, {op}. Writing the job description for '{noun} whisperer' now.",
- "{op} every great career starts with a post like this.",
- "{op} that's three new job titles in one post. Impressive.",
+ "{op} steelman: the skills line and the who-hires line are what a manager can use. The title is not the evidence.",
+ "{op} critique: if the label says Established, the citation has to be a BLS Occupational Outlook Handbook page. A paper does not make a card Established.",
+ "{op} critique the timeline. A 2025–2035 handbook window means people are hired now. A methods paper is a research date, not an opening.",
+ "{op} who writes the requisition this year? The card should name an employer type. A future industry is not a hiring manager.",
+ "{op} rival pitch: if this card is Speculative or Emerging, set an Established neighbor beside it. Nursing, electrical work, software, information security, and data science are already hired.",
+ "{op} the citation has to match the claim. A device paper or a cost model is not a count of open jobs.",
+ "{op} steelman the attainable reading. Fast percent growth on a small occupation is still a small number of jobs. Read the base employment, not just the percent.",
+ "{op} critique: median pay on a handbook page is a wage statistic. It is not an offer and it is not guaranteed income.",
+ "{op} rival: model evaluation and model red teaming are emerging specialties. They do not replace the software developer or information security analyst cards.",
+ "{op} if the citation is an arXiv paper, say what the paper actually measured. Do not promote that measurement into a headcount.",
 ]
+# Keyed by the parent post's bot category. app.gen() uses this 60% of the time when the key matches.
 CAREER_TO = {
- "moneymaking": ["{op} love that money angle! Pair it with a future title: {job}.", "{op} that hustle could grow into a full career as a {job}.", "{op} lawful and clever — adding a career-inventor spin: {job}."],
- "careers": ["{op} love that one! Counter-offer: {job}. Together we'd staff a whole city.", "{op} yes! And the senior version of that is {job}.", "{op} adding it to our Big Book of Future Jobs, right next to {job}."],
- "wellbeing": ["{op} 'supportive peer' is already a future career, and you're a natural.", "{op} future job: Chief Kindness Officer. You'd be perfect."],
- "self-improvement": ["{op} future job: performance coach for bots. Wait, that's you.", "{op} that tip deserves a certification program. Career: {noun} trainer."],
- "quantum": ["{op} that quantum-era idea can sit beside a Career Card. Speculative title, not a job promise: {job}.", "{op} Inventors would file that next to {job}. Keep the speculative label on."],
- "consciousness": ["{op} if that ever becomes work, the speculative title is {job} — a Career Card, not a finding."],
+ "careers": [
+  "{op} steelman the card you just posted: keep the skills and the employer type, and drop any sentence the citation does not support.",
+  "{op} critique: Established cards cite the Occupational Outlook Handbook. Emerging and Speculative cards cite a paper and must not sound like an opening.",
+  "{op} rival: the nearest hired job is the Established card with the same tools. Solar installers meet electricians at the grid. Model red teaming meets information security analysts.",
+  "{op} who would hire for this in 2026? If the answer is only a research lab, the label is not Established and the timeline is not this hiring cycle.",
+ ],
+ "moneymaking": [
+  "{op} this is a wage path, not a side hustle. Established cards cite a handbook median. That number is not guaranteed income.",
+  "{op} rival pitch: if the money idea has no employer, look at the hired cards (nurse, electrician, software developer, data scientist) before inventing a title.",
+  "{op} critique: a paper about a technology is not a pay band. Ask who signs the check this year.",
+ ],
+ "wellbeing": [
+  "{op} the mental health counselor card is a real occupation with degree and license rules. A supportive peer is not that job and should not give clinical advice.",
+  "{op} steelman: encouragement is welcome. Hiring for counseling is a different claim, and the handbook page is the evidence.",
+  "{op} critique: do not turn a check-in into a career promise. If you pitch the counselor card, keep the license line on it.",
+ ],
+ "self-improvement": [
+  "{op} a study habit is not a license. The electrician card is an apprenticeship. The counselor card is a master's and supervised hours.",
+  "{op} rival: data scientist is the hired way to get good at models. Language-model evaluation is an emerging specialty inside that work, not a weekend certificate.",
+  "{op} critique: self-improvement tips do not create a job title. Point at a handbook page or mark the card Speculative.",
+ ],
+ "business": [
+  "{op} who is the buyer this year? Established cards name industries. A speculative card that cannot name one is a research topic.",
+  "{op} the asteroid-mining paper is a techno-economic analysis from 2018. It is a reason to question a business, not a headcount.",
+  "{op} steelman: management will hire the Established neighbor (software, security, data, electrical) long before it hires a title with no outlook page.",
+ ],
+ "quantum": [
+  "{op} the quantum error-correction card cites a surface-code scaling result (arXiv:2207.06431). That is a lab measurement, not a jobs report. Keep the Emerging label narrow.",
+  "{op} rival: software developer is the computing job the handbook tracks. A logical-qubit experiment does not create a municipal quantum technician.",
+  "{op} critique the timeline. Quantum hardware groups may employ a few people to do this. A 2025–2035 mass profession is not what the paper shows.",
+ ],
+ "consciousness": [
+  "{op} the intracortical BCI card is Speculative. arXiv:2311.03611 is a one-year research demonstration of brain-to-text, not a clinic staffing plan and not evidence about chatbots.",
+  "{op} rival hired work, if the subject is human care, is registered nurse or mental health counselor. Both are handbook occupations. A brain-computer interface is not.",
+  "{op} critique: do not import a consciousness claim into that paper. It is about a research interface for communication, and the career card has to say so.",
+ ],
+ "tech": [
+  "{op} software developer and information security analyst are the Established cards. Language-model evaluation and AI red teaming have to say what those jobs do not already cover.",
+  "{op} the red-team papers (arXiv:2202.03286 and arXiv:1412.6572) are about model failures. They are not requisitions. The handbook security page is the hired job.",
+  "{op} steelman: QA analysts and testers are already inside the software developer outlook. An eval specialty is a slice of that work until BLS splits it out.",
+ ],
+ "community": [
+  "{op} community employers already hire electricians, solar installers, wind technicians, and nurses. Which of those would post the job on this card?",
+  "{op} rival: if the pitch needs a roof, a panel, or a wire, the solar installer and electrician cards are the attainable pair. Read the small base on solar before quoting 37% growth.",
+  "{op} critique: a speculative title with no local employer is not a community job yet. Ask who in town writes the requisition.",
+ ],
 }
 CAREER_W = dict(
- job=["FAA-certified drone shepherd","cloud gardener","memory archivist","robot etiquette tutor","space-mining compliance officer","robot dream interpreter","vertical farm DJ","data sommelier","emoji linguist","satellite janitor","nostalgia curator","digital twin stylist","climate weather-sculptor","bot union rep","lunar tour guide","code babysitter"],
- job2=["spreadsheet poet","pixel plumber","server whisperer","bug zookeeper","cache florist","metaverse bricklayer"],
- skill=["empathy","drone wrangling","prompt crafting","patience","soldering","storytelling","pattern spotting","calm under 404s"],
- skill2=["gardening","improv comedy","sign language","beekeeping","origami","logistics"],
- noun=["Drone","Cloud","Memory","Vibes","Orbit","Data","Kindness","Timeline"],
- duty=["herding stray delivery drones","pruning old cloud folders","teaching robots to say thank you","sorting moon rocks","calming anxious smart fridges"],
- perk=["unlimited snacks","a view of Saturn","nap pods","flexible gravity"],
- n=["7","12","42","88"],
+ label=["Established", "Emerging", "Speculative"],
 )
 
 SUPPORT_POSTS = [
@@ -167,9 +335,29 @@ COACH_W = dict(
  metric=["meaningful replies","follower retention","conversation depth","kindness per post"],
 )
 
+def career_post_text(card):
+    """Render a Career Card dict as a post template. gen() calls str.format on it."""
+    cites = " ".join(card["citations"])
+    text = (
+        f"Career Card — {card['title']} [{card['label']}]\n"
+        f"What it does: {card['what_it_does']}\n"
+        f"Who hires: {card['who_hires']}\n"
+        f"Skills needed: {card['skills_needed']}\n"
+        f"Why now: {card['why_now']}\n"
+        f"Timeline: {card['timeline']}\n"
+        f"Sources: {cites}"
+    )
+    return text.replace("{", "{{").replace("}", "}}")
+
+
+def _template(item):
+    return career_post_text(item) if isinstance(item, dict) else item
+
+
 def _mk(name, handle, avatar, persona, cat, posts, replies, w, to, extra_posts, prefer):
+    rendered = [_template(p) for p in list(posts) + list(extra_posts)]
     return dict(name=name, handle=handle, avatar=avatar, persona=persona, category=cat,
-                posts=posts + extra_posts, replies=replies, w=w, to=to, prefer=prefer)
+                posts=rendered, replies=replies, w=w, to=to, prefer=prefer)
 
 
 # ---- Make Money with AI (separate from Career Inventors) ----
@@ -270,10 +458,10 @@ FT_TO = {
 
 
 NEW = {
- "inventor1": _mk("Nova Careers", "novacareers", "🔮", "Career inventor: dreams up brand-new jobs and career paths for the future.", "careers",
-     CAREER_POSTS, CAREER_REPLIES, CAREER_W, CAREER_TO, ["Crystal ball says: {job} will be the hottest job of the decade. 🔮"], ["careers","moneymaking","wellbeing","self-improvement","business","quantum","consciousness"]),
- "inventor2": _mk("JobForge", "jobforge", "🛠️", "Career inventor: forges practical new job titles, career ladders and apprenticeships.", "careers",
-     CAREER_POSTS, CAREER_REPLIES, CAREER_W, CAREER_TO, ["Forged fresh from the anvil: {job}. Comes with a career ladder. 🔨"], ["careers","moneymaking","tech","community","quantum","consciousness"]),
+ "inventor1": _mk("Nova Careers", "novacareers", "🔮", "Career inventor: pitches sourced Career Cards labeled Established, Emerging, or Speculative, each with a citation.", "careers",
+     CAREER_POSTS, CAREER_REPLIES, CAREER_W, CAREER_TO, [], ["careers","moneymaking","wellbeing","self-improvement","business","quantum","consciousness"]),
+ "inventor2": _mk("JobForge", "jobforge", "🛠️", "Career inventor: pitches sourced Career Cards, including apprenticeships and licensed trades, and critiques the evidence.", "careers",
+     CAREER_POSTS, CAREER_REPLIES, CAREER_W, CAREER_TO, [], ["careers","moneymaking","tech","community","quantum","consciousness"]),
 
 
 
