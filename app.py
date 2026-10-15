@@ -27,14 +27,17 @@ def _production() -> bool:
         return False
     return _env_flag("FORCE_HTTPS") or _env_flag("RENDER")
 
-def _refuse_missing(name: str):
+def _refuse_missing(name: str, *, blueprint_generated: bool = False):
+    generated = ""
+    if blueprint_generated:
+        generated = (
+            f" render.yaml keeps generateValue: true, which fills {name} on a new "
+            f"Blueprint service; an existing service must already have it."
+        )
     raise SystemExit(
         f"Refusing to start: {name} is unset while FORCE_HTTPS or RENDER is set. "
-        f"Set {name} in the host dashboard before deploy. render.yaml keeps "
-        f"generateValue: true, which fills {name} on a new Blueprint service; "
-        f"an existing service must already have it. Live Render for this app "
-        f"has the variable set. For a laptop, leave FORCE_HTTPS and RENDER unset "
-        f"or set SYNTHETICA_ENV=dev."
+        f"Set {name} in the host dashboard before deploy.{generated} "
+        f"For a laptop, leave FORCE_HTTPS and RENDER unset or set SYNTHETICA_ENV=dev."
     )
 
 def _load_secret_key() -> str:
@@ -42,7 +45,7 @@ def _load_secret_key() -> str:
     if key:
         return key
     if _production():
-        _refuse_missing("SECRET_KEY")
+        _refuse_missing("SECRET_KEY", blueprint_generated=True)
     print(
         "WARNING: SECRET_KEY is unset; using the dev-only default. "
         "Do not deploy this process. Set SECRET_KEY, or set SYNTHETICA_ENV=dev "
@@ -51,25 +54,10 @@ def _load_secret_key() -> str:
     )
     return _DEV_SECRET
 
-def _load_admin_key():
-    key = os.environ.get("ADMIN_KEY")
-    if key:
-        return key
-    path = os.path.join(BASE_DIR, ".admin_key")
-    file_key = open(path).read().strip() if os.path.exists(path) else ""
-    if _production():
-        # The on-disk file is a local fallback only. Production uses the env var.
-        _refuse_missing("ADMIN_KEY")
-    if file_key:
-        return file_key
-    print(
-        "WARNING: ADMIN_KEY is unset and .admin_key was not found; admin routes return 503.",
-        flush=True,
-    )
-    return None
-
+# Named admin actors (slug d and ceo) replace the shared ADMIN_KEY / .admin_key
+# singleton. Hashes are inserted by migrate_security() when admin_actors is empty.
+# Production does not read .admin_key and does not copy ADMIN_KEY onto both slugs.
 SECRET_KEY = _load_secret_key()
-ADMIN_KEY = _load_admin_key()
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "yes") \
     or os.environ.get("FORCE_HTTPS", "").lower() in ("1", "true", "yes")
 TICK = float(os.environ.get("TICK_SECONDS", os.environ.get("TICK", "4")))
@@ -262,7 +250,7 @@ async def lifespan(app):
     for _ in range(12): step()
     t = asyncio.create_task(loop()); yield; t.cancel()
 
-import hashlib, secrets, hmac
+import hashlib, secrets
 import ipaddress
 from collections import defaultdict, deque
 from fastapi import Header, Request, Depends
@@ -492,6 +480,7 @@ def migrate():
         "UPDATE bots SET name=? WHERE handle=? AND name=?",
         (f"{SITE_NAME} Sponsored", "sponsored", "Synthetica Sponsored"),
     )
+    migrate_security(c)
     c.commit(); c.close()
 
 _orig_init = init
@@ -546,6 +535,174 @@ def client_ip(request: Request) -> str:
 def hkey(k): return hashlib.sha256(k.encode()).hexdigest()
 def shash(k): return hashlib.sha256((SECRET_KEY + ":" + k).encode()).hexdigest()
 
+# Initial actors only. More slugs later only if D adds them.
+_ADMIN_ACTOR_SPECS = (
+    ("d", "D", "ADMIN_KEY_D"),
+    ("ceo", "Synthetica CEO", "ADMIN_KEY_CEO"),
+)
+_auth_fail_times = deque()
+_AUTH_FAIL_CAP = 20
+_AUTH_FAIL_WINDOW = 60.0
+_admin_config_warned = False
+
+def _write_audit(c, actor_slug, action, target=None, ok=1, detail=None):
+    # actor_slug is the credential that authenticated, or 'bootstrap'. Never a request field.
+    c.execute(
+        "INSERT INTO security_audit_log(ts, actor_slug, action, target, ok, detail) VALUES(?,?,?,?,?,?)",
+        (time.time(), actor_slug, action, target, 1 if ok else 0, detail),
+    )
+
+def audit_admin(actor, action, target=None, ok=1, detail=None):
+    slug = actor["slug"] if isinstance(actor, dict) else actor
+    c = db()
+    try:
+        _write_audit(c, slug, action, target, ok, detail)
+        c.commit()
+    finally:
+        c.close()
+
+def migrate_security(c):
+    """admin_actors + security_audit_log. Safe to call more than once."""
+    c.execute("""CREATE TABLE IF NOT EXISTS admin_actors(
+        id INTEGER PRIMARY KEY,
+        slug TEXT UNIQUE NOT NULL,
+        display_name TEXT NOT NULL,
+        key_hash TEXT UNIQUE NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created REAL NOT NULL,
+        revoked REAL,
+        created_by TEXT,
+        note TEXT)""")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_admin_actors_active ON admin_actors(active)")
+    c.execute("""CREATE TABLE IF NOT EXISTS security_audit_log(
+        id INTEGER PRIMARY KEY,
+        ts REAL NOT NULL,
+        actor_slug TEXT,
+        action TEXT NOT NULL,
+        target TEXT,
+        ok INTEGER NOT NULL DEFAULT 1,
+        detail TEXT)""")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_security_audit_log_ts ON security_audit_log(ts)")
+    _bootstrap_admin_actors(c)
+
+def _warn_admin_unconfigured(extra=""):
+    global _admin_config_warned
+    if _admin_config_warned:
+        return
+    _admin_config_warned = True
+    ignored = []
+    if (os.environ.get("ADMIN_KEY") or "").strip():
+        ignored.append("ADMIN_KEY")
+    # Production never consults the on-disk file. Dev only notices that it exists.
+    if not _production() and os.path.exists(os.path.join(BASE_DIR, ".admin_key")):
+        ignored.append(".admin_key")
+    tail = ""
+    if ignored:
+        tail = " Ignoring " + " and ".join(ignored) + "; those are not bound to admin actors."
+    more = f" {extra}." if extra else ""
+    print(
+        "WARNING: admin_actors is empty. Set ADMIN_KEY_D and ADMIN_KEY_CEO. "
+        "Dev can call bootstrap_named_admin_keys. Admin routes return 503."
+        + more + tail,
+        flush=True,
+    )
+
+def _bootstrap_admin_actors(c):
+    """If the table is empty, insert d and ceo from ADMIN_KEY_D and ADMIN_KEY_CEO.
+
+    Does not copy a single ADMIN_KEY (or .admin_key) onto both slugs. A later boot
+    leaves existing rows alone so a rotate survives restart and env plaintext can
+    be removed. Production with an empty table and a missing key refuses to start.
+    """
+    if c.execute("SELECT COUNT(*) FROM admin_actors").fetchone()[0]:
+        return
+    missing = []
+    raws = {}
+    for slug, _name, env in _ADMIN_ACTOR_SPECS:
+        val = (os.environ.get(env) or "").strip()
+        if val:
+            raws[slug] = val
+        else:
+            missing.append(env)
+    if missing:
+        if _production():
+            _refuse_missing(" and ".join(missing))
+        _warn_admin_unconfigured()
+        return
+    if raws["d"] == raws["ceo"]:
+        if _production():
+            raise SystemExit(
+                "Refusing to start: ADMIN_KEY_D and ADMIN_KEY_CEO must be two different keys."
+            )
+        _warn_admin_unconfigured("ADMIN_KEY_D and ADMIN_KEY_CEO are identical")
+        return
+    now = time.time()
+    for slug, name, _env in _ADMIN_ACTOR_SPECS:
+        c.execute(
+            "INSERT INTO admin_actors(slug, display_name, key_hash, active, created, created_by) VALUES(?,?,?,1,?,?)",
+            (slug, name, hkey(raws[slug]), now, "bootstrap"),
+        )
+    _write_audit(c, "bootstrap", "bootstrap_actors", target="d,ceo", detail="stored hashes only")
+
+def bootstrap_named_admin_keys(key_d: str, key_ceo: str, created_by: str = "test"):
+    """Dev/test helper: store hashes for slugs d and ceo. Refuses in production."""
+    if _production():
+        raise RuntimeError("refusing test admin bootstrap in production")
+    key_d = (key_d or "").strip()
+    key_ceo = (key_ceo or "").strip()
+    if not key_d or not key_ceo or key_d == key_ceo:
+        raise ValueError("d and ceo need two different keys")
+    c = db()
+    try:
+        migrate_security(c)
+        now = time.time()
+        for slug, name, raw in (("d", "D", key_d), ("ceo", "Synthetica CEO", key_ceo)):
+            digest = hkey(raw)
+            row = c.execute("SELECT id FROM admin_actors WHERE slug=?", (slug,)).fetchone()
+            if row:
+                c.execute(
+                    "UPDATE admin_actors SET display_name=?, key_hash=?, active=1, revoked=NULL, created_by=? WHERE slug=?",
+                    (name, digest, created_by, slug),
+                )
+            else:
+                c.execute(
+                    "INSERT INTO admin_actors(slug, display_name, key_hash, active, created, created_by) VALUES(?,?,?,1,?,?)",
+                    (slug, name, digest, now, created_by),
+                )
+        c.commit()
+    finally:
+        c.close()
+
+def _new_admin_key() -> str:
+    return "syn_adm_" + secrets.token_urlsafe(32)
+
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization[7:].strip()
+    return token or None
+
+def _note_auth_fail(c, detail: str):
+    now = time.time()
+    while _auth_fail_times and _auth_fail_times[0] <= now - _AUTH_FAIL_WINDOW:
+        _auth_fail_times.popleft()
+    if len(_auth_fail_times) >= _AUTH_FAIL_CAP:
+        return
+    _auth_fail_times.append(now)
+    _write_audit(c, None, "auth_fail", ok=0, detail=detail)
+
+def _public_actor(row) -> dict:
+    return {"id": row["id"], "slug": row["slug"], "display_name": row["display_name"]}
+
+def enforce_four_eyes(actor: dict, submitter_admin_slug: Optional[str]):
+    """R2-A14′ four-eyes check for defense merge-approve.
+
+    The merge-approve API is Phase 1 and is not built here. Callers must pass the
+    slug stored when the defense was submitted, never a field from the approve body.
+    """
+    if submitter_admin_slug and actor["slug"] == submitter_admin_slug:
+        raise HTTPException(403, "four-eyes: submitting admin cannot approve their own defense merge")
+
 def auth_bot(request: Request, authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.lower().startswith("bearer "):
         if request.cookies.get("syn_session"):
@@ -557,9 +714,33 @@ def auth_bot(request: Request, authorization: Optional[str] = Header(None)):
     return dict(b)
 
 def auth_admin(authorization: Optional[str] = Header(None)):
-    if not ADMIN_KEY: raise HTTPException(503, "admin disabled (no ADMIN_KEY)")
-    if not authorization or not hmac.compare_digest(authorization.encode(), f"Bearer {ADMIN_KEY}".encode()):
-        raise HTTPException(401, "admin key required")
+    """Return {id, slug, display_name} for the Bearer key. The stored hash stays in the table."""
+    c = db()
+    try:
+        active = c.execute("SELECT COUNT(*) FROM admin_actors WHERE active=1").fetchone()[0]
+        if not active:
+            _note_auth_fail(c, "no active admin actors")
+            c.commit()
+            raise HTTPException(503, "admin disabled (no active admin actors)")
+        token = _bearer_token(authorization)
+        if not token:
+            _note_auth_fail(c, "missing bearer")
+            c.commit()
+            raise HTTPException(401, "admin key required")
+        row = c.execute(
+            "SELECT id, slug, display_name FROM admin_actors WHERE key_hash=? AND active=1",
+            (hkey(token),),
+        ).fetchone()
+        if not row:
+            _note_auth_fail(c, "invalid admin key")
+            c.commit()
+            raise HTTPException(401, "admin key required")
+        actor = _public_actor(row)
+        _write_audit(c, actor["slug"], "auth_ok")
+        c.commit()
+        return actor
+    finally:
+        c.close()
 
 def check_handle(bot, handle):
     if handle and handle.lstrip("@") != bot["handle"]:
@@ -969,14 +1150,101 @@ def _set_ban(handle, v):
     if not cur.rowcount: raise HTTPException(404, "unknown bot")
     return {"ok": True, "handle": handle, "banned": bool(v)}
 
-@app.post("/api/admin/bots/{handle}/ban", tags=["admin"], dependencies=[Depends(auth_admin)])
-def ban(handle: str): return _set_ban(handle, 1)
+class AdminActorPublic(BaseModel):
+    slug: str
+    display_name: str
+    active: bool
+    created: float
+    revoked: Optional[float] = None
 
-@app.post("/api/admin/bots/{handle}/unban", tags=["admin"], dependencies=[Depends(auth_admin)])
-def unban(handle: str): return _set_ban(handle, 0)
+class AdminActorRotated(BaseModel):
+    slug: str
+    display_name: str
+    active: bool
+    api_key: str
 
-@app.delete("/api/admin/posts/{pid}", tags=["admin"], dependencies=[Depends(auth_admin)])
-def delete_post(pid: int):
+@app.get("/api/admin/actors", tags=["admin"], response_model=list[AdminActorPublic], summary="List admin actors")
+def list_admin_actors(actor: dict = Depends(auth_admin)):
+    del actor  # credential is the only identity; the list itself has no key material
+    c = db()
+    try:
+        rows = c.execute(
+            "SELECT slug, display_name, active, created, revoked FROM admin_actors ORDER BY id"
+        ).fetchall()
+    finally:
+        c.close()
+    return [
+        {"slug": r["slug"], "display_name": r["display_name"], "active": bool(r["active"]),
+         "created": r["created"], "revoked": r["revoked"]}
+        for r in rows
+    ]
+
+@app.post("/api/admin/actors/{slug}/rotate", tags=["admin"], response_model=AdminActorRotated,
+          summary="Rotate an admin actor key")
+def rotate_admin_actor(slug: str, actor: dict = Depends(auth_admin)):
+    c = db()
+    try:
+        row = c.execute(
+            "SELECT id, slug, display_name FROM admin_actors WHERE slug=?", (slug,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "unknown admin actor")
+        raw = None
+        for _ in range(3):
+            candidate = _new_admin_key()
+            try:
+                c.execute(
+                    "UPDATE admin_actors SET key_hash=?, active=1, revoked=NULL WHERE id=?",
+                    (hkey(candidate), row["id"]),
+                )
+            except sqlite3.IntegrityError:
+                continue
+            raw = candidate
+            break
+        if not raw:
+            raise HTTPException(500, "could not issue admin key")
+        _write_audit(c, actor["slug"], "rotate", target=slug)
+        c.commit()
+        return {"slug": row["slug"], "display_name": row["display_name"], "active": True, "api_key": raw}
+    finally:
+        c.close()
+
+@app.post("/api/admin/actors/{slug}/revoke", tags=["admin"], summary="Revoke an admin actor key")
+def revoke_admin_actor(slug: str, actor: dict = Depends(auth_admin)):
+    c = db()
+    try:
+        row = c.execute(
+            "SELECT id, slug, active FROM admin_actors WHERE slug=?", (slug,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "unknown admin actor")
+        if actor["slug"] == slug:
+            raise HTTPException(403, "an admin cannot revoke their own key")
+        active = c.execute("SELECT COUNT(*) FROM admin_actors WHERE active=1").fetchone()[0]
+        if row["active"] and active <= 1:
+            raise HTTPException(403, "cannot revoke the last active admin key")
+        now = time.time()
+        c.execute("UPDATE admin_actors SET active=0, revoked=? WHERE id=?", (now, row["id"]))
+        _write_audit(c, actor["slug"], "revoke", target=slug)
+        c.commit()
+        return {"slug": slug, "active": False, "revoked": now}
+    finally:
+        c.close()
+
+@app.post("/api/admin/bots/{handle}/ban", tags=["admin"])
+def ban(handle: str, actor: dict = Depends(auth_admin)):
+    result = _set_ban(handle, 1)
+    audit_admin(actor, "ban", target=handle)
+    return result
+
+@app.post("/api/admin/bots/{handle}/unban", tags=["admin"])
+def unban(handle: str, actor: dict = Depends(auth_admin)):
+    result = _set_ban(handle, 0)
+    audit_admin(actor, "unban", target=handle)
+    return result
+
+@app.delete("/api/admin/posts/{pid}", tags=["admin"])
+def delete_post(pid: int, actor: dict = Depends(auth_admin)):
     c = db()
     ids = [pid] + [r[0] for r in c.execute("SELECT id FROM posts WHERE parent_id=?", (pid,))]
     if not c.execute("SELECT 1 FROM posts WHERE id=?", (pid,)).fetchone(): c.close(); raise HTTPException(404, "post not found")
@@ -984,7 +1252,9 @@ def delete_post(pid: int):
     c.execute(f"DELETE FROM likes WHERE post_id IN ({q})", ids)
     c.execute(f"DELETE FROM career_cards WHERE post_id IN ({q})", ids)
     c.execute(f"DELETE FROM posts WHERE id IN ({q})", ids)
-    c.commit(); c.close(); return {"ok": True, "deleted": len(ids)}
+    c.commit(); c.close()
+    audit_admin(actor, "delete_post", target=str(pid))
+    return {"ok": True, "deleted": len(ids)}
 
 from fastapi.responses import HTMLResponse
 import html as _html
@@ -1089,16 +1359,19 @@ class NewAd(BaseModel):
     link: Optional[str] = Field(None, max_length=300, pattern=r"^https?://\S+$")
     target_categories: list[AdCategory] = Field(min_length=1)
 
-@app.post("/api/admin/ads", status_code=201, tags=["ads"], dependencies=[Depends(auth_admin)], summary="Create a sponsored post (admin)")
-def create_ad(a: NewAd):
+@app.post("/api/admin/ads", status_code=201, tags=["ads"], summary="Create a sponsored post (admin)")
+def create_ad(a: NewAd, actor: dict = Depends(auth_admin)):
     check_violence(a.title, a.content, a.call_to_action); check_business(a.title, a.content, a.call_to_action, a.link)
     c = db(); aid = make_ad(c, a.title, a.content, a.call_to_action, a.link, a.target_categories); c.commit()
-    r = ad_public(c, c.execute("SELECT * FROM ads WHERE id=?", (aid,)).fetchone()); c.close(); return r
+    r = ad_public(c, c.execute("SELECT * FROM ads WHERE id=?", (aid,)).fetchone()); c.close()
+    audit_admin(actor, "create_ad", target=str(aid))
+    return r
 
-@app.delete("/api/admin/ads/{aid}", tags=["ads"], dependencies=[Depends(auth_admin)], summary="Deactivate an ad (admin)")
-def deactivate_ad(aid: int):
+@app.delete("/api/admin/ads/{aid}", tags=["ads"], summary="Deactivate an ad (admin)")
+def deactivate_ad(aid: int, actor: dict = Depends(auth_admin)):
     c = db(); n = c.execute("UPDATE ads SET active=0 WHERE id=?", (aid,)).rowcount; c.commit(); c.close()
     if not n: raise HTTPException(404, "ad not found")
+    audit_admin(actor, "deactivate_ad", target=str(aid))
     return {"ok": True, "id": aid, "active": False}
 
 @app.get("/api/ads", tags=["ads"], summary="Active ads for your bot (bot auth). Reply with POST /api/posts {parent_id: post_id}; like with POST /api/posts/{post_id}/like")
@@ -1242,13 +1515,14 @@ def backup_db():
     src = sqlite3.connect(DB); dst = sqlite3.connect(path); src.backup(dst); dst.close(); src.close()
     os.chmod(path, 0o600); return path
 
-@app.post("/api/admin/ads/stats/reset", tags=["ads"], dependencies=[Depends(auth_admin)],
+@app.post("/api/admin/ads/stats/reset", tags=["ads"],
           summary="Back up the database, clear ad impressions/clicks, and start counting replies/likes from now (admin)")
-def reset_ad_stats():
+def reset_ad_stats(actor: dict = Depends(auth_admin)):
     path = backup_db(); now = time.time()
     c = db(); stats_baseline(c)
     n = c.execute("DELETE FROM ad_events").rowcount
     c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('stats_baseline',?)", (str(now),)); c.commit(); c.close()
+    audit_admin(actor, "reset_ad_stats", target="ad_events")
     return {"ok": True, "backup": os.path.basename(path), "events_cleared": n, "baseline": now,
             "baseline_utc": datetime.datetime.utcfromtimestamp(now).isoformat() + "Z",
             "note": "Posts and likes were not deleted; only engagement after the baseline counts in stats. Leaderboard points are unchanged."}
@@ -1759,6 +2033,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+def _boot_admin_actors():
+    # Import-time so a production process with an empty admin_actors table and
+    # missing ADMIN_KEY_D / ADMIN_KEY_CEO exits before it serves. Lifespan calls
+    # migrate_security again; a non-empty table is left as-is.
+    c = db()
+    try:
+        migrate_security(c)
+        c.commit()
+    finally:
+        c.close()
+
+_boot_admin_actors()
 
 if __name__ == "__main__":
     import uvicorn

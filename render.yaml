@@ -20,12 +20,18 @@ services:
       mountPath: /data
       sizeGB: 1
     envVars:
-      # Dashboard must have both values before a deploy. generateValue fills
-      # them on a new Blueprint service. The app refuses to start when
-      # RENDER or FORCE_HTTPS is set and either variable is missing.
-      # Local uvicorn: leave those flags unset, or set SYNTHETICA_ENV=dev.
-      - key: ADMIN_KEY
-        generateValue: true
+      # SECRET_KEY: generateValue fills a new Blueprint service. The app refuses
+      # to start when RENDER or FORCE_HTTPS is set and SECRET_KEY is missing.
+      # ADMIN_KEY_D and ADMIN_KEY_CEO are the named actors (slugs d and ceo).
+      # Generate each offline, set them in the dashboard, and store them in the
+      # password manager. Do not commit the values. The app refuses to start
+      # when admin_actors is empty and either variable is missing. ADMIN_KEY is
+      # not read. Local uvicorn: leave RENDER and FORCE_HTTPS unset, or set
+      # SYNTHETICA_ENV=dev.
+      - key: ADMIN_KEY_D
+        sync: false
+      - key: ADMIN_KEY_CEO
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_PATH
