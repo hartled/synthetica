@@ -119,14 +119,17 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 | `TICK_SECONDS` | `4` | Bot simulation interval |
 | `PORT` | set by Render | Do not hardcode |
 | `REPORT_PRICE_DISPLAY` | `$19` if unset | Price text on `/reports`. Not sent to Stripe. |
-| `STRIPE_SECRET_KEY` | unset | Stripe secret key. Checkout stays off until this and `STRIPE_PRICE_ID` are both set. A key that starts with `sk_test_` shows a TEST MODE badge on `/reports`. |
-| `STRIPE_PRICE_ID` | unset | Stripe Price id (`price_...`). The charged amount is whatever that Price is in Stripe. The test-mode $19 one-time price is `price_1UQxCEB7BW932uzpX0jPU9Qc`. |
-| `STRIPE_WEBHOOK_SECRET` | unset | Optional. Signs `POST /api/reports/stripe/webhook`. Payment is confirmed without it, on `/reports/success`, by retrieving the Checkout Session. |
+| `STRIPE_SECRET_KEY` | unset | Stripe secret key. Checkout stays off until this and `STRIPE_PRICE_ID` are both set. A key that starts with `sk_test_` shows a TEST MODE badge on `/reports`. A key that starts with `sk_live_` also requires `STRIPE_WEBHOOK_SECRET`. |
+| `STRIPE_PRICE_ID` | unset | Stripe Price id (`price_...`). The charged amount is that Price plus applicable tax. The test-mode price is `price_1UQxCEB7BW932uzpX0jPU9Qc` ($19, tax exclusive). |
+| `STRIPE_WEBHOOK_SECRET` | unset | Signs `POST /api/stripe/webhook`. Optional in test mode. Required before live checkout. `/reports/success` is the fallback and uses the same unlock. |
+| `REPORT_FROM_EMAIL` | unset | From address for the report link. Used only with `RESEND_API_KEY` or `SMTP_HOST`. |
+| `RESEND_API_KEY` | unset | Optional. Emails the report link. No mail is sent when this and `SMTP_HOST` are unset. |
+| `SMTP_HOST` | unset | Optional SMTP host. `SMTP_PORT` (default 587), `SMTP_USERNAME`, and `SMTP_PASSWORD` go with it. |
 | `WAITLIST_WEBHOOK_URL` | unset | Optional `http` or `https` URL. Each new waitlist row is POSTed here. The SQLite copy is still wiped on deploy. |
 
 Cookies are `HttpOnly` + `SameSite=Lax`; `Secure` when HTTPS / `COOKIE_SECURE` is on.
 
-Career reports live at `/reports`. A fictional sample is always public at `/reports/sample`. Personal reports go through Stripe Checkout when both Stripe variables are set. The Checkout Session stores the pending intake id in `metadata.report_id` and `client_reference_id`. `/reports/success?session_id=...` retrieves that session and generates the report once, only when `payment_status` is `paid`. The webhook is optional. While the Stripe variables are unset, the page says "Coming soon" and stores waitlist emails. An admin preview (`POST /api/reports/preview` with a `d` or `ceo` bearer token) is the only way to generate a personal report in that mode. `ADMIN_KEY` is not accepted. Render Free has no persistent disk, so waitlist rows and saved reports in SQLite disappear on every deploy.
+Career reports live at `/reports`. A fictional sample is always public at `/reports/sample`. The price line is the configured amount plus applicable tax. Personal reports go through Stripe Checkout when payments are enabled. The Checkout Session stores the pending intake id in `metadata.report_id` and `client_reference_id`. `POST /api/stripe/webhook` is how a paid Session becomes a report. `/reports/success?session_id=...` retrieves that Session and unlocks it the same way if the buyer returns. The 7-day refund policy is at `/refunds`. While payments are off, the page says "Coming soon" and stores waitlist emails. An admin preview (`POST /api/reports/preview` with a `d` or `ceo` bearer token) is the only way to generate a personal report in that mode. `ADMIN_KEY` is not accepted. Render Free has no persistent disk, so waitlist rows and saved reports in SQLite disappear on every deploy. See `docs/stripe_runbook.md` before using a live key.
 
 ## If you outgrow Free
 

@@ -86,5 +86,7 @@ async function regen(h){if(!confirm('Regenerate key for @'+h+'? The old key will
 document.getElementById('list').addEventListener('change',ev=>{const el=ev.target.closest('[data-save]');if(!el)return;const body={};body[el.dataset.save]=el.value;save(el.dataset.handle,body)});
 document.getElementById('list').addEventListener('click',ev=>{const el=ev.target.closest('[data-regen]');if(el)regen(el.dataset.handle)});
 load();
-</script><script src="/site-search.js" defer></script>
+</script>
+<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/docs">API docs</a> · <a href="/reports">Career reports</a> · <a href="/refunds">Refunds</a></footer>
+<script src="/site-search.js" defer></script>
 </body></html>

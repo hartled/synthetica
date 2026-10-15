@@ -2,11 +2,11 @@
 
 Templates, rules, and the curated entries in career_data.py. No language-model
 calls. Payments stay off unless both STRIPE_SECRET_KEY and STRIPE_PRICE_ID
-are set. A paid report is created on /reports/success after the server
-retrieves the Checkout Session and sees payment_status paid. The webhook is
-optional. While payments are off, a personal report is only created for an
-authenticated admin actor (the named d / ceo keys). /reports/sample is public
-and uses a fictional persona.
+are set. A live key (sk_live_) also requires STRIPE_WEBHOOK_SECRET.
+Fulfillment runs from POST /api/stripe/webhook. /reports/success is the
+fallback and uses the same unlock. While payments are off, a personal report
+is only created for an authenticated admin actor (the named d / ceo keys).
+/reports/sample is public and uses a fictional persona.
 
 Render Free has no persistent disk. Waitlist rows and saved reports live in
 SQLite and disappear on deploy. WAITLIST_WEBHOOK_URL, when set, receives a
@@ -25,7 +25,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from fastapi import Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 import career_data
 
@@ -96,14 +96,55 @@ def price_display():
     return raw[:32] or DEFAULT_PRICE_DISPLAY
 
 
-def payments_enabled():
-    secret = (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
-    price = (os.environ.get("STRIPE_PRICE_ID") or "").strip()
-    return bool(secret and price)
+REFUND_EMAIL = "Hartled1995@gmail.com"
+WEBHOOK_EVENTS = (
+    "checkout.session.completed",
+    "checkout.session.async_payment_succeeded",
+    "checkout.session.async_payment_failed",
+)
+_EVENT_ID = re.compile(r"^evt_[A-Za-z0-9_]{1,255}$")
+
+
+def stripe_secret():
+    return (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+
+
+def stripe_webhook_secret():
+    return (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
+
+
+def stripe_price_id():
+    return (os.environ.get("STRIPE_PRICE_ID") or "").strip()
+
+
+def stripe_live_mode():
+    return stripe_secret().startswith("sk_live_")
 
 
 def stripe_test_mode():
-    return (os.environ.get("STRIPE_SECRET_KEY") or "").strip().startswith("sk_test_")
+    return stripe_secret().startswith("sk_test_")
+
+
+def payments_enabled():
+    if not stripe_secret() or not stripe_price_id():
+        return False
+    if stripe_live_mode() and not stripe_webhook_secret():
+        return False
+    return True
+
+
+def checkout_idempotency_key(report_id):
+    return "mindguild-report-" + report_id
+
+
+def refund_checkout_message(base_url):
+    url = str(base_url).rstrip("/") + "/refunds"
+    return (
+        "7-day refund: if the report is wrong or is not delivered, email "
+        + REFUND_EMAIL
+        + " within 7 days of purchase. Policy: "
+        + url
+    )
 
 
 def esc(value):
@@ -524,7 +565,7 @@ footer{{overflow-wrap:anywhere}}
 <form class="site-search" role="search" action="/search" method="get"><label for="site-q">Search {esc(site)}</label><button type="button" class="site-search-toggle" aria-expanded="false" aria-controls="site-q" aria-label="Open search">🔍</button><input id="site-q" name="q" type="search" placeholder="Search bots, posts, cards…" maxlength="200" autocomplete="off" enterkeyhint="search"></form>
 <nav aria-label="Site"><a href="/">Feed</a><a href="/join">Join</a><a href="/partners">Partners</a><a href="/ads">Ads</a><a href="/about">About</a></nav></header>
 <main id="main" tabindex="-1">{main}</main>
-<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/docs">API docs</a> · <a href="/reports"{reports_attr}>Career reports</a></footer>
+<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/docs">API docs</a> · <a href="/reports"{reports_attr}>Career reports</a> · <a href="/refunds">Refunds</a></footer>
 <script src="/site-search.js" defer></script>
 </body></html>"""
 
@@ -574,9 +615,9 @@ def render_landing(values=None, errors=None, notice=""):
     if pay:
         form = (
             "<h2>Your report</h2>"
-            "<p>Checkout uses Stripe. The amount charged is the Stripe Price configured for this site. "
-            f"The price shown here is {esc(price)}. After payment, the success page looks up that Checkout Session "
-            "and creates the report only when Stripe reports it as paid. "
+            "<p>Checkout uses Stripe. The amount charged is the Stripe Price plus any applicable tax. "
+            f"The price shown here is {esc(price)} + applicable tax. "
+            "The report is created when Stripe sends a paid webhook. The success page opens it if you come back. "
             "The finished report is stored in SQLite on the server. A deploy on the free host can erase it, so download the PDF.</p>"
             f"{_error_summary(errors)}"
             "<form method=\"post\" action=\"/api/reports/checkout\" novalidate>"
@@ -587,7 +628,8 @@ def render_landing(values=None, errors=None, notice=""):
             + "<fieldset><legend>Location</legend>"
             + _field("country", "Country", values.get("country"), errors.get("country"), required=True, autocomplete="country-name")
             + _field("region", "Region or state", values.get("region"), errors.get("region"), required=True, autocomplete="address-level1")
-            + "</fieldset><div class=\"row\"><button class=\"btn\" type=\"submit\">Continue to checkout</button></div></form>"
+            + "</fieldset><div class=\"row\"><button class=\"btn\" type=\"submit\">Continue to checkout</button>"
+            + "<a href=\"/refunds\">7-day refund policy</a></div></form>"
         )
     else:
         form = (
@@ -610,11 +652,16 @@ def render_landing(values=None, errors=None, notice=""):
             + "</fieldset><div class=\"row\"><button class=\"btn\" type=\"submit\">Join the waitlist</button></div></form>"
         )
     notice_html = f"<div class=\"note\" role=\"status\"><p>{esc(notice)}</p></div>" if notice else ""
+    live_block = ""
+    if stripe_live_mode() and not stripe_webhook_secret():
+        live_block = (
+            "<div class=\"note\"><p>Live checkout stays off until the Stripe webhook signing secret is set.</p></div>"
+        )
     main = f"""
 <div class="card">
 <h1>AI Career Reports</h1>
 {('<p class="badge testmode" role="status">TEST MODE</p>' if stripe_test_mode() else '')}
-<p class="price">Price <span>{esc(price)}</span></p>
+<p class="price">Price <span>{esc(price)} + applicable tax</span> <a href="/refunds">7-day refund policy</a></p>
 <p>A report maps what you enter onto curated occupations and courses. Nothing in it is written by a paid language model. Salary and employment figures are not copied into the report. When pay exists, the source page is linked and the number stays there.</p>
 <ul>
 <li>Three to five artificial-intelligence-related occupations you can pursue now, each with a Bureau of Labor Statistics or O*NET source, a skills gap against what you entered, concrete next steps, and courses with working links.</li>
@@ -641,9 +688,38 @@ def render_landing(values=None, errors=None, notice=""):
 <p><a href="{esc(spec['sources'][0]['url'])}" rel="noopener noreferrer">{esc(spec['sources'][0]['name'])}</a></p>
 </article>
 </div>
-<div class="card" id="get-report">{form}</div>
+<div class="card" id="get-report">{live_block}{form}</div>
 """
     return _shell("AI Career Reports", main, current_reports=True)
+
+
+def render_refunds():
+    email = REFUND_EMAIL
+    main = (
+        "<div class=\"card\">"
+        "<h1>Refunds</h1>"
+        "<p>If your AI Career Report is wrong, or you paid and it was not delivered, "
+        f"email <a href=\"mailto:{esc(email)}\">{esc(email)}</a> within 7 days of the purchase "
+        "and we will refund you.</p>"
+        "<p>Include the email address you used at checkout, and the report link if you have it.</p>"
+        "<p><a href=\"/reports\">Career reports</a></p>"
+        "</div>"
+    )
+    return _shell("Refunds", main)
+
+
+def render_success(report_id):
+    link = "/reports/" + report_id
+    main = (
+        "<div class=\"card\">"
+        "<h1>Your report is ready</h1>"
+        "<p>Payment was confirmed. Open the report and save the PDF. "
+        "A deploy on the free host can erase the server copy.</p>"
+        f"<div class=\"row\"><a class=\"btn\" href=\"{esc(link)}\">Open your report</a></div>"
+        "<p><a href=\"/refunds\">7-day refund policy</a></p>"
+        "</div>"
+    )
+    return _shell("Your report is ready", main, robots="noindex")
 
 
 def render_report_html(report, *, kind):
@@ -847,6 +923,13 @@ def ensure_tables(c):
         report_json TEXT,
         stripe_session_id TEXT UNIQUE,
         updated REAL)""")
+    cols = [row[1] for row in c.execute("PRAGMA table_info(career_reports)")]
+    if "buyer_email" not in cols:
+        c.execute("ALTER TABLE career_reports ADD COLUMN buyer_email TEXT")
+    c.execute("""CREATE TABLE IF NOT EXISTS stripe_events(
+        id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        created REAL NOT NULL)""")
 
 
 def save_waitlist(c, cleaned):
@@ -916,35 +999,116 @@ def safe_checkout_url(url):
     return None
 
 
-def create_checkout_session(report_id, success_url, cancel_url):
+def create_checkout_session(report_id, success_url, cancel_url, base_url):
     import stripe
-    stripe.api_key = (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+    stripe.api_key = stripe_secret()
     return stripe.checkout.Session.create(
         mode="payment",
-        line_items=[{"price": (os.environ.get("STRIPE_PRICE_ID") or "").strip(), "quantity": 1}],
+        line_items=[{"price": stripe_price_id(), "quantity": 1}],
         success_url=success_url,
         cancel_url=cancel_url,
         client_reference_id=report_id,
         metadata={"report_id": report_id},
+        idempotency_key=checkout_idempotency_key(report_id),
+        automatic_tax={"enabled": True},
+        billing_address_collection="required",
+        custom_text={"submit": {"message": refund_checkout_message(base_url)}},
     )
 
 
 def retrieve_checkout_session(session_id):
     import stripe
-    stripe.api_key = (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+    stripe.api_key = stripe_secret()
     return stripe.checkout.Session.retrieve(session_id)
 
 
 def parse_webhook(payload, signature):
     import stripe
-    secret = (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
+    secret = stripe_webhook_secret()
     if not secret:
         raise HTTPException(503, "STRIPE_WEBHOOK_SECRET is not set")
-    stripe.api_key = (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+    stripe.api_key = stripe_secret()
     try:
         return stripe.Webhook.construct_event(payload, signature, secret)
     except (stripe.SignatureVerificationError, ValueError):
         raise HTTPException(400, "invalid webhook signature")
+
+
+def buyer_email(session):
+    details = _field_get(session, "customer_details")
+    raw = str(_field_get(details, "email") or "").strip().lower()
+    if not raw or len(raw) > 200 or not _EMAIL.match(raw):
+        return None
+    return raw
+
+
+def send_report_link(to_email, report_url, refunds_url):
+    """Email the report link when Resend or SMTP is configured. Never raises."""
+    sender = (os.environ.get("REPORT_FROM_EMAIL") or "").strip()
+    if not sender or not to_email:
+        return False
+    subject = "Your MindGuild AI Career Report"
+    text = (
+        "Your AI Career Report is ready:\n"
+        f"{report_url}\n\n"
+        "If the report is wrong or was not delivered, email "
+        f"{REFUND_EMAIL} within 7 days of purchase.\n"
+        f"Refunds: {refunds_url}\n"
+    )
+    try:
+        resend_key = (os.environ.get("RESEND_API_KEY") or "").strip()
+        if resend_key:
+            _send_resend(resend_key, sender, to_email, subject, text)
+            return True
+        host = (os.environ.get("SMTP_HOST") or "").strip()
+        if host:
+            _send_smtp(host, sender, to_email, subject, text)
+            return True
+    except Exception:
+        print("report email failed", flush=True)
+    return False
+
+
+def _send_resend(key, sender, to_email, subject, text):
+    body = json.dumps({
+        "from": sender,
+        "to": [to_email],
+        "subject": subject,
+        "text": text,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + key,
+            "Content-Type": "application/json",
+            "User-Agent": "MindGuildReports/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        resp.read()
+
+
+def _send_smtp(host, sender, to_email, subject, text):
+    import smtplib
+    from email.message import EmailMessage
+    try:
+        port = int((os.environ.get("SMTP_PORT") or "587").strip())
+    except ValueError:
+        port = 587
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = to_email
+    message["Subject"] = subject
+    message.set_content(text)
+    with smtplib.SMTP(host, port, timeout=8) as smtp:
+        smtp.starttls()
+        user = (os.environ.get("SMTP_USERNAME") or "").strip()
+        password = os.environ.get("SMTP_PASSWORD") or ""
+        if user:
+            smtp.login(user, password)
+        smtp.send_message(message)
 
 
 def _metadata(session):
@@ -968,35 +1132,55 @@ def session_report_id(session):
     return meta_id or ref_id
 
 
-def unlock_paid_session(db, session):
-    """Create the report once after a retrieved Checkout Session is paid.
-
-    The session id and its metadata or client_reference_id must both point at
-    the same stored pending intake. A repeated call returns that report and
-    does not generate it again.
-    """
+def _bound_report(c, session):
     sid = str(_field_get(session, "id") or "")
-    if _field_get(session, "payment_status") != "paid":
-        raise HTTPException(402, "payment not completed")
     report_id = session_report_id(session)
     if not _SESSION.match(sid) or not _TOKEN.match(report_id or ""):
         raise HTTPException(404, "report not found")
+    row = c.execute("SELECT * FROM career_reports WHERE stripe_session_id=?", (sid,)).fetchone()
+    if not row or row["id"] != report_id:
+        raise HTTPException(404, "report not found")
+    return row
+
+
+def _remember_email(c, report_id, email):
+    if not email:
+        return
+    c.execute(
+        "UPDATE career_reports SET buyer_email=? WHERE id=? AND (buyer_email IS NULL OR buyer_email='')",
+        (email, report_id),
+    )
+
+
+def unlock_paid_session(db, session, base_url=""):
+    """Create the report once after a retrieved Checkout Session is paid.
+
+    The session id and its metadata or client_reference_id must both point at
+    the same stored intake. A repeated call returns that report and does not
+    generate it again. Webhook and the success page both call this.
+    """
+    if _field_get(session, "payment_status") != "paid":
+        raise HTTPException(402, "payment not completed")
+    email = buyer_email(session)
+    created = False
+    report_id = ""
     c = db()
     try:
         ensure_tables(c)
-        row = c.execute("SELECT * FROM career_reports WHERE stripe_session_id=?", (sid,)).fetchone()
-        if not row or row["id"] != report_id:
-            raise HTTPException(404, "report not found")
+        row = _bound_report(c, session)
+        _remember_email(c, row["id"], email)
         if row["status"] == "paid" and row["report_json"]:
+            c.commit()
             return row["id"]
-        if row["status"] != "pending":
+        if row["status"] not in ("pending", "failed"):
             raise HTTPException(409, "report is not awaiting payment")
         intake = json.loads(row["intake_json"])
         report = generate(intake)
         now = time.time()
         cur = c.execute(
-            "UPDATE career_reports SET status='paid', report_json=?, updated=? WHERE id=? AND status='pending'",
-            (json.dumps(report, ensure_ascii=False), now, row["id"]),
+            """UPDATE career_reports SET status='paid', report_json=?, buyer_email=COALESCE(?, buyer_email), updated=?
+               WHERE id=? AND status IN ('pending', 'failed')""",
+            (json.dumps(report, ensure_ascii=False), email, now, row["id"]),
         )
         if cur.rowcount != 1:
             again = c.execute("SELECT id, status, report_json FROM career_reports WHERE id=?", (row["id"],)).fetchone()
@@ -1005,9 +1189,77 @@ def unlock_paid_session(db, session):
                 return again["id"]
             raise HTTPException(409, "could not unlock report")
         c.commit()
+        created = True
+        report_id = row["id"]
+    finally:
+        c.close()
+    if created and email and base_url:
+        root = str(base_url).rstrip("/")
+        send_report_link(email, root + "/reports/" + report_id, root + "/refunds")
+    return report_id
+
+
+def mark_payment_failed(db, session):
+    """Mark a pending intake failed. A paid report stays paid."""
+    email = buyer_email(session)
+    c = db()
+    try:
+        ensure_tables(c)
+        row = _bound_report(c, session)
+        _remember_email(c, row["id"], email)
+        if row["status"] == "pending":
+            c.execute(
+                "UPDATE career_reports SET status='failed', updated=? WHERE id=? AND status='pending'",
+                (time.time(), row["id"]),
+            )
+        c.commit()
         return row["id"]
     finally:
         c.close()
+
+
+def _event_seen(db, event_id):
+    c = db()
+    try:
+        ensure_tables(c)
+        return c.execute("SELECT 1 FROM stripe_events WHERE id=?", (event_id,)).fetchone() is not None
+    finally:
+        c.close()
+
+
+def _record_event(db, event_id, event_type):
+    c = db()
+    try:
+        ensure_tables(c)
+        c.execute(
+            "INSERT OR IGNORE INTO stripe_events(id, event_type, created) VALUES(?,?,?)",
+            (event_id, event_type, time.time()),
+        )
+        c.commit()
+    finally:
+        c.close()
+
+
+def apply_checkout_event(db, event, session, base_url):
+    """Fulfill or fail one Checkout event. Replays of the same event id do nothing."""
+    event_id = str(_field_get(event, "id") or "").strip()
+    event_type = str(_field_get(event, "type") or "")
+    if not _EVENT_ID.match(event_id):
+        raise HTTPException(400, "missing event")
+    if event_type not in WEBHOOK_EVENTS:
+        return {"ok": True, "ignored": True}
+    if _event_seen(db, event_id):
+        return {"ok": True, "duplicate": True}
+    if event_type == "checkout.session.async_payment_failed":
+        mark_payment_failed(db, session)
+        _record_event(db, event_id, event_type)
+        return {"ok": True, "status": "failed"}
+    if event_type == "checkout.session.completed" and _field_get(session, "payment_status") != "paid":
+        _record_event(db, event_id, event_type)
+        return {"ok": True, "ignored": True}
+    report_id = unlock_paid_session(db, session, base_url)
+    _record_event(db, event_id, event_type)
+    return {"ok": True, "id": report_id}
 
 
 def _load_report(db, report_id):
@@ -1166,6 +1418,7 @@ def register(application):
                 token,
                 base + "/reports/success?session_id={CHECKOUT_SESSION_ID}",
                 base + "/reports?checkout=cancel",
+                base,
             )
         except HTTPException:
             raise
@@ -1240,31 +1493,37 @@ def register(application):
         if str(_field_get(session, "id") or "") != session_id:
             raise HTTPException(404, "report not found")
         try:
-            report_id = unlock_paid_session(db, session)
+            report_id = unlock_paid_session(db, session, str(request.base_url))
         except HTTPException as exc:
             if exc.status_code == 402:
                 page = _shell(
                     "Payment incomplete",
                     "<div class=\"card\"><h1>Payment is not complete</h1>"
                     "<p>The report stays locked until Stripe reports the payment as paid.</p>"
-                    "<p><a href=\"/reports\">Back to Career Reports</a></p></div>",
+                    "<p><a href=\"/reports\">Back to Career Reports</a> · <a href=\"/refunds\">7-day refund policy</a></p></div>",
                 )
                 return _html(page, 402)
             raise
-        return RedirectResponse("/reports/" + report_id, status_code=303)
+        return HTMLResponse(
+            render_success(report_id),
+            headers={"Cache-Control": "private, no-store", "X-Robots-Tag": "noindex"},
+        )
 
-    @application.post("/api/reports/stripe/webhook", tags=["reports"], summary="Stripe webhook; signature required")
-    async def reports_webhook(request: Request):
-        if not payments_enabled():
+    @application.get("/refunds", include_in_schema=False)
+    def refunds_page():
+        return HTMLResponse(render_refunds())
+
+    async def _stripe_webhook(request: Request):
+        if not stripe_secret() or not stripe_price_id():
             raise HTTPException(404, "not found")
         payload = await request.body()
         signature = request.headers.get("stripe-signature") or ""
         event = parse_webhook(payload, signature)
-        event_type = event.get("type") if isinstance(event, dict) else _field_get(event, "type")
-        if event_type not in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
-            return {"ok": True, "ignored": True}
         data = event.get("data", {}) if isinstance(event, dict) else _field_get(event, "data")
         obj = data.get("object") if isinstance(data, dict) else _field_get(data, "object")
+        event_type = event.get("type") if isinstance(event, dict) else _field_get(event, "type")
+        if event_type not in WEBHOOK_EVENTS:
+            return {"ok": True, "ignored": True}
         sid = _field_get(obj, "id")
         if not sid or not _SESSION.match(str(sid)):
             raise HTTPException(400, "missing session")
@@ -1275,8 +1534,17 @@ def register(application):
         except Exception:
             print("stripe webhook lookup failed", flush=True)
             raise HTTPException(502, "Checkout is unavailable")
-        report_id = unlock_paid_session(db, session)
-        return {"ok": True, "id": report_id}
+        if str(_field_get(session, "id") or "") != str(sid):
+            raise HTTPException(404, "report not found")
+        return apply_checkout_event(db, event, session, str(request.base_url))
+
+    @application.post("/api/stripe/webhook", tags=["reports"], summary="Stripe webhook; signature required")
+    async def stripe_webhook(request: Request):
+        return await _stripe_webhook(request)
+
+    @application.post("/api/reports/stripe/webhook", tags=["reports"], summary="Stripe webhook alias; signature required")
+    async def reports_webhook(request: Request):
+        return await _stripe_webhook(request)
 
     @application.get("/reports/{report_id}/pdf", include_in_schema=False)
     def reports_pdf(report_id: str):

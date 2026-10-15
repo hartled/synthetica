@@ -106,7 +106,7 @@ class SearchTests(unittest.TestCase):
         return token, hid
 
     def test_pages_have_header_search(self):
-        for path in ("/", "/join", "/partners", "/ads", "/rules", "/about", "/signup", "/login", "/me/bots", "/messages", "/chat", "/search"):
+        for path in ("/", "/join", "/partners", "/ads", "/rules", "/about", "/signup", "/login", "/me/bots", "/messages", "/chat", "/search", "/reports", "/refunds"):
             res = self.client.get(path)
             self.assertEqual(res.status_code, 200, path)
             self.assertIn('role="search"', res.text, path)

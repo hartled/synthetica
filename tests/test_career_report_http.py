@@ -57,7 +57,11 @@ class ReportHttpTests(unittest.TestCase):
 
     def setUp(self):
         app._hits.clear()
-        for key in ("STRIPE_SECRET_KEY", "STRIPE_PRICE_ID", "STRIPE_WEBHOOK_SECRET", "WAITLIST_WEBHOOK_URL", "REPORT_PRICE_DISPLAY"):
+        for key in (
+            "STRIPE_SECRET_KEY", "STRIPE_PRICE_ID", "STRIPE_WEBHOOK_SECRET",
+            "WAITLIST_WEBHOOK_URL", "REPORT_PRICE_DISPLAY", "REPORT_FROM_EMAIL",
+            "RESEND_API_KEY", "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
+        ):
             os.environ.pop(key, None)
 
     def test_landing_sample_and_footer_when_payments_are_off(self):
@@ -66,7 +70,13 @@ class ReportHttpTests(unittest.TestCase):
         self.assertIn("Coming soon. Join the waitlist", page.text)
         self.assertNotIn("TEST MODE", page.text)
         self.assertIn("Price", page.text)
-        self.assertIn("$19", page.text)
+        self.assertIn("$19 + applicable tax", page.text)
+        self.assertIn('href="/refunds"', page.text)
+        refunds = self.client.get("/refunds")
+        self.assertEqual(refunds.status_code, 200, refunds.text)
+        self.assertIn("Hartled1995@gmail.com", refunds.text)
+        self.assertIn("within 7 days", refunds.text)
+        self.assertIn('type="search"', refunds.text)
         self.assertIn("/reports/sample", page.text)
         self.assertIn('type="search"', page.text)
         self.assertIn('href="#main"', page.text)
@@ -76,6 +86,7 @@ class ReportHttpTests(unittest.TestCase):
         home = self.client.get("/")
         self.assertEqual(home.status_code, 200)
         self.assertIn('href="/reports"', home.text)
+        self.assertIn('href="/refunds"', home.text)
         sample = self.client.get("/reports/sample")
         self.assertEqual(sample.status_code, 200, sample.text)
         self.assertIn("Fictional persona", sample.text)
@@ -202,6 +213,15 @@ class ReportHttpTests(unittest.TestCase):
             self.assertEqual(payload["checkout_url"], session.url)
             self.assertNotIn("id", payload)
             self.assertEqual(stripe_create.kwargs["line_items"], [{"price": "price_fake", "quantity": 1}])
+            self.assertEqual(stripe_create.kwargs["automatic_tax"], {"enabled": True})
+            self.assertEqual(stripe_create.kwargs["billing_address_collection"], "required")
+            self.assertEqual(
+                stripe_create.kwargs["idempotency_key"],
+                "mindguild-report-" + session.client_reference_id,
+            )
+            submit = stripe_create.kwargs["custom_text"]["submit"]["message"]
+            self.assertIn("7-day refund", submit)
+            self.assertIn("http://testserver/refunds", submit)
             self.assertIn("/reports/success?session_id={CHECKOUT_SESSION_ID}", stripe_create.kwargs["success_url"])
             self.assertEqual(session.metadata.get("report_id"), session.client_reference_id)
             self.assertTrue(session.client_reference_id)
@@ -230,22 +250,26 @@ class ReportHttpTests(unittest.TestCase):
             self.assertEqual(still["status"], "pending")
             self.assertIsNone(still["report_json"])
             session.metadata = {"report_id": row["id"]}
+            session.customer_details = {"email": "Buyer@Example.com"}
             unlocked = self.client.get("/reports/success?session_id=" + session.id, follow_redirects=False)
-            self.assertEqual(unlocked.status_code, 303)
-            self.assertTrue(unlocked.headers["location"].endswith("/reports/" + row["id"]))
-            page = self.client.get(unlocked.headers["location"])
+            self.assertEqual(unlocked.status_code, 200, unlocked.text)
+            self.assertIn("Open your report", unlocked.text)
+            self.assertIn("/reports/" + row["id"], unlocked.text)
+            self.assertIn("/refunds", unlocked.text)
+            page = self.client.get("/reports/" + row["id"])
             self.assertEqual(page.status_code, 200, page.text)
             self.assertIn("Junior data analyst", page.text)
             self.assertIn("Download PDF", page.text)
             c = app.db()
             saved = c.execute(
-                "SELECT report_json, updated FROM career_reports WHERE id=?",
+                "SELECT report_json, updated, buyer_email FROM career_reports WHERE id=?",
                 (row["id"],),
             ).fetchone()
             c.close()
+            self.assertEqual(saved["buyer_email"], "buyer@example.com")
             again = self.client.get("/reports/success?session_id=" + session.id, follow_redirects=False)
-            self.assertEqual(again.status_code, 303)
-            self.assertEqual(again.headers["location"], unlocked.headers["location"])
+            self.assertEqual(again.status_code, 200, again.text)
+            self.assertIn("/reports/" + row["id"], again.text)
             c = app.db()
             replayed = c.execute(
                 "SELECT status, report_json, updated FROM career_reports WHERE id=?",
@@ -285,7 +309,7 @@ class ReportHttpTests(unittest.TestCase):
             }
             raw = json.dumps(event).encode()
             bad = self.client.post(
-                "/api/reports/stripe/webhook",
+                "/api/stripe/webhook",
                 content=raw,
                 headers={"Stripe-Signature": "t=1,v1=deadbeef", "Content-Type": "application/json"},
             )
@@ -294,7 +318,7 @@ class ReportHttpTests(unittest.TestCase):
             signed = stamp.encode() + b"." + raw
             mac = hmac.new(b"whsec_test", signed, hashlib.sha256).hexdigest()
             good = self.client.post(
-                "/api/reports/stripe/webhook",
+                "/api/stripe/webhook",
                 content=raw,
                 headers={"Stripe-Signature": f"t={stamp},v1={mac}", "Content-Type": "application/json"},
             )
@@ -303,6 +327,176 @@ class ReportHttpTests(unittest.TestCase):
             saved = self.client.get("/reports/" + good.json()["id"])
             self.assertEqual(saved.status_code, 200, saved.text)
             self.assertNotIn("Admin preview", saved.text)
+
+
+def _sign(secret, raw):
+    stamp = str(int(time.time()))
+    mac = hmac.new(secret.encode(), stamp.encode() + b"." + raw, hashlib.sha256).hexdigest()
+    return f"t={stamp},v1={mac}"
+
+
+class StripeWebhookTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = ReportHttpTests.client
+
+    def setUp(self):
+        ReportHttpTests.setUp(self)
+
+    def _start(self, session_id):
+        os.environ["STRIPE_SECRET_KEY"] = "sk_test_fake"
+        os.environ["STRIPE_PRICE_ID"] = "price_fake"
+        os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test"
+
+        class Session:
+            def __init__(self):
+                self.id = session_id
+                self.url = "https://checkout.stripe.com/c/pay/" + session_id
+                self.payment_status = "unpaid"
+                self.metadata = {}
+                self.client_reference_id = ""
+                self.customer_details = {"email": "Buyer@Example.com"}
+
+        session = Session()
+
+        def stripe_create(**kwargs):
+            session.metadata = dict(kwargs.get("metadata") or {})
+            session.client_reference_id = kwargs.get("client_reference_id")
+            stripe_create.kwargs = kwargs
+            return session
+
+        def retrieve(sid):
+            self.assertEqual(sid, session.id)
+            return session
+
+        return session, stripe_create, retrieve
+
+    def _event(self, session, event_id, event_type):
+        return json.dumps({
+            "id": event_id,
+            "type": event_type,
+            "data": {"object": {"id": session.id, "object": "checkout.session"}},
+        }).encode()
+
+    def _post(self, raw, signature):
+        return self.client.post(
+            "/api/stripe/webhook",
+            content=raw,
+            headers={"Stripe-Signature": signature, "Content-Type": "application/json"},
+        )
+
+    def test_signature_replay_async_success_and_failure(self):
+        session, stripe_create, retrieve = self._start("cs_test_wh1")
+        sent = []
+
+        def capture(req, timeout=8):
+            sent.append(req.full_url)
+            class Resp:
+                def read(self):
+                    return b"{}"
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    return False
+            return Resp()
+
+        os.environ["RESEND_API_KEY"] = "re_test"
+        os.environ["REPORT_FROM_EMAIL"] = "reports@example.com"
+        with mock.patch("stripe.checkout.Session.create", stripe_create), mock.patch(
+            "stripe.checkout.Session.retrieve", retrieve
+        ), mock.patch("urllib.request.urlopen", capture):
+            started = self.client.post("/api/reports/checkout", json=INTAKE)
+            self.assertEqual(started.status_code, 200, started.text)
+            self.assertEqual(stripe_create.kwargs["automatic_tax"], {"enabled": True})
+            self.assertEqual(
+                stripe_create.kwargs["idempotency_key"],
+                "mindguild-report-" + session.client_reference_id,
+            )
+            raw = self._event(session, "evt_test_bad", "checkout.session.completed")
+            bad = self._post(raw, "t=1,v1=deadbeef")
+            self.assertEqual(bad.status_code, 400)
+
+            unpaid = self._event(session, "evt_test_unpaid", "checkout.session.completed")
+            ignored = self._post(unpaid, _sign("whsec_test", unpaid))
+            self.assertEqual(ignored.status_code, 200, ignored.text)
+            self.assertTrue(ignored.json().get("ignored"))
+            c = app.db()
+            row = c.execute(
+                "SELECT id, status, report_json FROM career_reports WHERE stripe_session_id=?",
+                (session.id,),
+            ).fetchone()
+            c.close()
+            self.assertEqual(row["status"], "pending")
+            self.assertIsNone(row["report_json"])
+
+            session.payment_status = "paid"
+            paid = self._event(session, "evt_test_paid", "checkout.session.completed")
+            good = self._post(paid, _sign("whsec_test", paid))
+            self.assertEqual(good.status_code, 200, good.text)
+            self.assertEqual(good.json()["id"], row["id"])
+            self.assertEqual(len(sent), 1)
+            replay = self._post(paid, _sign("whsec_test", paid))
+            self.assertEqual(replay.status_code, 200, replay.text)
+            self.assertTrue(replay.json().get("duplicate"))
+            self.assertEqual(len(sent), 1)
+            c = app.db()
+            saved = c.execute(
+                "SELECT status, buyer_email, report_json FROM career_reports WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+            c.close()
+            self.assertEqual(saved["status"], "paid")
+            self.assertEqual(saved["buyer_email"], "buyer@example.com")
+            self.assertTrue(saved["report_json"])
+
+            failed_session, failed_create, failed_retrieve = self._start("cs_test_fail1")
+            with mock.patch("stripe.checkout.Session.create", failed_create), mock.patch(
+                "stripe.checkout.Session.retrieve", failed_retrieve
+            ):
+                self.assertEqual(self.client.post("/api/reports/checkout", json=INTAKE).status_code, 200)
+                fail_raw = self._event(failed_session, "evt_test_fail", "checkout.session.async_payment_failed")
+                failed = self._post(fail_raw, _sign("whsec_test", fail_raw))
+                self.assertEqual(failed.status_code, 200, failed.text)
+                self.assertEqual(failed.json()["status"], "failed")
+                c = app.db()
+                state = c.execute(
+                    "SELECT id, status FROM career_reports WHERE stripe_session_id=?",
+                    (failed_session.id,),
+                ).fetchone()
+                c.close()
+                self.assertEqual(state["status"], "failed")
+                self.assertEqual(self.client.get("/reports/" + state["id"]).status_code, 404)
+
+            async_session, async_create, async_retrieve = self._start("cs_test_async1")
+            async_session.payment_status = "paid"
+            with mock.patch("stripe.checkout.Session.create", async_create), mock.patch(
+                "stripe.checkout.Session.retrieve", async_retrieve
+            ):
+                self.assertEqual(self.client.post("/api/reports/checkout", json=INTAKE).status_code, 200)
+                async_raw = self._event(
+                    async_session, "evt_test_async", "checkout.session.async_payment_succeeded"
+                )
+                unlocked = self._post(async_raw, _sign("whsec_test", async_raw))
+                self.assertEqual(unlocked.status_code, 200, unlocked.text)
+                page = self.client.get("/reports/" + unlocked.json()["id"])
+                self.assertEqual(page.status_code, 200, page.text)
+                self.assertIn("Open your report", self.client.get(
+                    "/reports/success?session_id=" + async_session.id
+                ).text)
+
+    def test_live_mode_without_webhook_secret_blocks_checkout(self):
+        os.environ["STRIPE_SECRET_KEY"] = "sk_live_fake"
+        os.environ["STRIPE_PRICE_ID"] = "price_live_fake"
+        self.assertFalse(reports.payments_enabled())
+        page = self.client.get("/reports")
+        self.assertIn("Coming soon. Join the waitlist", page.text)
+        self.assertIn("webhook signing secret", page.text)
+        self.assertNotIn("TEST MODE", page.text)
+        blocked = self.client.post("/api/reports/checkout", json=INTAKE)
+        self.assertEqual(blocked.status_code, 403)
+        os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_live"
+        self.assertTrue(reports.payments_enabled())
+        self.assertIn("Continue to checkout", self.client.get("/reports").text)
 
 
 if __name__ == "__main__":
