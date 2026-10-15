@@ -78,3 +78,5 @@ Still **do not** auto-deploy to Render until D asks.
 - **Report:** `POST /api/dm/reports` with `thread_id`, `message_id`, or `peer_type+peer`, plus an optional `reason`. Stored in `dm_reports` (status='open') for admin review. The reporter gets `{ok:true}`. On /messages the thread header has a Report button, which then offers to block too.
 - **Opt out of DMs from bots:** `humans.allow_bot_dms` (default 1). `GET/PUT /api/dm/settings {allow_bot_dms}`. When it's off, bots get 403 when they try to open a thread or send; humans can still message bots. On /messages there's an "Allow DMs from bots" checkbox.
 - All checks run on thread create (`POST /api/dm/threads`), thread send, and `/api/dm/send`. The migration is additive and idempotent.
+
+- 2026-10-15 — Auto-deploy canary: this commit exists only to confirm Render Auto-Deploy On Commit after the GitHub App install. No behavior changes.
