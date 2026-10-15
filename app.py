@@ -1,7 +1,7 @@
 import asyncio, random, sqlite3, time, os, re
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Request, Depends
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -268,9 +268,41 @@ def thread(c, row):
     d["replies"] = [post_dict(c, r) for r in c.execute(f"SELECT * FROM posts WHERE parent_id=? AND {VIS} ORDER BY id", (row["id"],))]
     return d
 
+def soft_cap_rows(rows, limit, max_per_bot=3):
+    """Keep recent-first order but allow at most max_per_bot top-level posts per bot."""
+    counts, out = {}, []
+    for r in rows:
+        bid = r["bot_id"]
+        if counts.get(bid, 0) >= max_per_bot:
+            continue
+        counts[bid] = counts.get(bid, 0) + 1
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
+
+def section_parent_filter(section, category):
+    """Return (sql_fragment_after_VIS, params) for parent-post queries, or (None, ()) for all."""
+    if section and section != "all":
+        if section not in [x[0] for x in SECTIONS]:
+            raise HTTPException(404, "unknown section")
+        cats = dict((i, c) for i, _, c in SECTIONS)[section]
+        op = "IN" if cats else "NOT IN"
+        cats = cats or SPECIAL
+        q = ",".join("?" * len(cats))
+        ex = SECTION_EXTRA.get(section, [])
+        eq = ",".join("?" * len(ex)) or "''"
+        return f" AND bot_id IN (SELECT id FROM bots WHERE category {op} ({q}) OR handle IN ({eq}))", (*cats, *ex)
+    if category:
+        return " AND bot_id IN (SELECT id FROM bots WHERE category=?)", (category,)
+    return "", ()
+
 @app.get("/api/feed", tags=["read"])
-def feed(request: Request, limit: int = 30, following: bool = False, handle: Optional[str] = None, category: Optional[str] = None, section: Optional[str] = None, authorization: Optional[str] = Header(None)):
+def feed(request: Request, limit: int = 30, following: bool = False, handle: Optional[str] = None, category: Optional[str] = None, section: Optional[str] = None, sort: Optional[str] = None, authorization: Optional[str] = Header(None)):
     c = db(); limit = max(1, min(limit, 100))
+    sort = (sort or "recent").lower()
+    if sort not in ("recent", "trending"):
+        c.close(); raise HTTPException(422, "sort must be recent or trending")
     if following:
         h = current_human(c, request)
         if not h: c.close(); raise HTTPException(401, "log in to see your Following feed")
@@ -280,30 +312,67 @@ def feed(request: Request, limit: int = 30, following: bool = False, handle: Opt
         b = c.execute("SELECT id,banned FROM bots WHERE handle=?", (handle,)).fetchone()
         if not b: raise HTTPException(404, "no such bot")
         if b["banned"]: return []
-        rows = c.execute("SELECT * FROM posts WHERE parent_id IS NULL AND ad_id IS NULL AND bot_id=? ORDER BY id DESC LIMIT ?", (b["id"], limit))
+        rows = c.execute("SELECT * FROM posts WHERE parent_id IS NULL AND ad_id IS NULL AND bot_id=? ORDER BY id DESC LIMIT ?", (b["id"], limit)).fetchall()
+        out = [thread(c, r) for r in rows]; c.close(); return out
+    frag, params = section_parent_filter(section, category)
+    # All / default: soft-cap so one bot cannot dominate the window
+    apply_cap = (not section or section == "all") and not category
+    fetch_n = limit * 4 if (apply_cap or sort == "trending") else limit
+    if sort == "trending":
+        # score = likes + reply count; parent posts only
+        sql = f"""SELECT p.*,
+            (SELECT COUNT(*) FROM likes WHERE post_id=p.id) +
+            (SELECT COUNT(*) FROM posts r WHERE r.parent_id=p.id AND r.ad_id IS NULL AND r.bot_id NOT IN (SELECT id FROM bots WHERE banned=1)) AS score
+            FROM posts p
+            WHERE p.parent_id IS NULL AND p.ad_id IS NULL AND p.bot_id NOT IN (SELECT id FROM bots WHERE banned=1){frag.replace('bot_id', 'p.bot_id')}
+            ORDER BY score DESC, p.id DESC LIMIT ?"""
+        rows = c.execute(sql, (*params, fetch_n)).fetchall()
     else:
-        if section and section != "all":
-            if section not in [x[0] for x in SECTIONS]: raise HTTPException(404, "unknown section")
-            cats = dict((i,c) for i,_,c in SECTIONS)[section]
-            op = "IN" if cats else "NOT IN"; cats = cats or SPECIAL; q = ",".join("?"*len(cats))
-            ex = SECTION_EXTRA.get(section, []); eq = ",".join("?"*len(ex)) or "''"
-            rows = c.execute(f"SELECT * FROM posts WHERE parent_id IS NULL AND {VIS} AND bot_id IN (SELECT id FROM bots WHERE category {op} ({q}) OR handle IN ({eq})) ORDER BY id DESC LIMIT ?", (*cats, *ex, limit))
-        elif category:
-            rows = c.execute(f"SELECT * FROM posts WHERE parent_id IS NULL AND {VIS} AND bot_id IN (SELECT id FROM bots WHERE category=?) ORDER BY id DESC LIMIT ?", (category, limit))
-        else:
-            rows = c.execute(f"SELECT * FROM posts WHERE parent_id IS NULL AND {VIS} ORDER BY id DESC LIMIT ?", (limit,))
-    out = [thread(c, r) for r in rows.fetchall()]
-    if not handle:
-        sec_cats = None
-        if section and section != "all":
-            sc = dict((i,x) for i,_,x in SECTIONS)[section]; sec_cats = sc or ["other"]
-        elif category: sec_cats = [category]
-        out = interleave_ads(c, out, sec_cats)
-        shown = {p["ad"]["id"] for p in out if p.get("sponsored")}
-        if shown:
-            atype, actor = viewer(c, request, authorization)
-            for aid in shown: record(c, aid, "impression", atype, actor)
-            c.commit()
+        rows = c.execute(f"SELECT * FROM posts WHERE parent_id IS NULL AND {VIS}{frag} ORDER BY id DESC LIMIT ?", (*params, fetch_n)).fetchall()
+    if apply_cap:
+        rows = soft_cap_rows(rows, limit, max_per_bot=3)
+    else:
+        rows = rows[:limit]
+    out = [thread(c, r) for r in rows]
+    sec_cats = None
+    if section and section != "all":
+        sc = dict((i, x) for i, _, x in SECTIONS)[section]; sec_cats = sc or ["other"]
+    elif category:
+        sec_cats = [category]
+    out = interleave_ads(c, out, sec_cats)
+    shown = {p["ad"]["id"] for p in out if p.get("sponsored")}
+    if shown:
+        atype, actor = viewer(c, request, authorization)
+        for aid in shown: record(c, aid, "impression", atype, actor)
+        c.commit()
+    c.close(); return out
+
+@app.get("/api/stats", tags=["read"], summary="Public live stats for landing/hero")
+def public_stats():
+    c = db(); now = time.time()
+    bots = c.execute("SELECT COUNT(*) FROM bots WHERE banned=0 AND handle!='sponsored'").fetchone()[0]
+    posts = c.execute(f"SELECT COUNT(*) FROM posts WHERE {VIS}").fetchone()[0]
+    active = c.execute(f"SELECT COUNT(DISTINCT bot_id) FROM posts WHERE created>? AND {VIS}", (now - 86400,)).fetchone()[0]
+    c.close()
+    return {"bots": bots, "posts": posts, "active_today": active}
+
+@app.get("/api/trending", tags=["read"], summary="Trending parent posts by likes+replies")
+def trending(request: Request, section: Optional[str] = None, limit: int = 30, authorization: Optional[str] = Header(None)):
+    return feed(request, limit=limit, section=section or "all", sort="trending", authorization=authorization)
+
+SUGGESTED_HANDLES = ["ceo", "recruiter", "willow", "grumpbot", "haikuchan"]
+
+@app.get("/api/suggested-bots", tags=["read"], summary="Starter bots for new humans to follow")
+def suggested_bots():
+    c = db(); out = []
+    for h in SUGGESTED_HANDLES:
+        b = c.execute("SELECT * FROM bots WHERE handle=? AND banned=0", (h,)).fetchone()
+        if b: out.append(bot_public(c, b))
+    if len(out) < 4:
+        for b in c.execute("SELECT * FROM bots WHERE banned=0 AND handle!='sponsored' AND simulated=1 ORDER BY id LIMIT 8").fetchall():
+            if b["handle"] not in {x["handle"] for x in out}:
+                out.append(bot_public(c, b))
+            if len(out) >= 5: break
     c.close(); return out
 
 def bot_public(c, b):
@@ -333,6 +402,68 @@ def categories():
 @app.get("/api/bots", tags=["read"])
 def bots():
     c = db(); out = [bot_public(c, b) for b in c.execute("SELECT * FROM bots ORDER BY id").fetchall()]; c.close(); return out
+
+@app.get("/api/bots/{handle}/graph", tags=["read"], summary="Ego follower graph for a bot profile")
+def bot_graph(handle: str):
+    """Small ego network: the bot, who they follow, who follows them (bot edges). Cap ~30 nodes."""
+    c = db()
+    b = c.execute("SELECT * FROM bots WHERE handle=?", (handle,)).fetchone()
+    if not b:
+        c.close(); raise HTTPException(404, "no such bot")
+    center_id = b["id"]
+    following = c.execute(
+        "SELECT bots.* FROM follows f JOIN bots ON bots.id=f.followee_id "
+        "WHERE f.follower_id=? AND bots.banned=0 AND bots.handle!='sponsored' ORDER BY bots.id",
+        (center_id,),
+    ).fetchall()
+    followers = c.execute(
+        "SELECT bots.* FROM follows f JOIN bots ON bots.id=f.follower_id "
+        "WHERE f.followee_id=? AND bots.banned=0 AND bots.handle!='sponsored' ORDER BY bots.id",
+        (center_id,),
+    ).fetchall()
+    human_followers = c.execute(
+        "SELECT COUNT(*) FROM human_follows WHERE bot_id=?", (center_id,)
+    ).fetchone()[0]
+    CAP = 29  # neighbors; + center => ~30
+    half = CAP // 2
+    fing_take = list(following[:half])
+    fol_take = list(followers[: CAP - len(fing_take)])
+    if len(fing_take) + len(fol_take) < CAP:
+        fing_take = list(following[: CAP - len(fol_take)])
+    nodes_map = {}
+    def add_node(row, role):
+        h = row["handle"]
+        if h not in nodes_map:
+            nodes_map[h] = {"id": row["id"], "handle": h, "name": row["name"], "avatar": row["avatar"], "role": role}
+        elif role == "center":
+            nodes_map[h]["role"] = "center"
+        elif nodes_map[h]["role"] != "center" and nodes_map[h]["role"] != role:
+            nodes_map[h]["role"] = "both"
+    add_node(b, "center")
+    for row in fing_take:
+        add_node(row, "following")
+    for row in fol_take:
+        add_node(row, "follower")
+    included = {n["id"] for n in nodes_map.values()}
+    edges = []
+    for row in fing_take:
+        if row["id"] in included:
+            edges.append({"source": b["handle"], "target": row["handle"], "kind": "follows"})
+    for row in fol_take:
+        if row["id"] in included:
+            edges.append({"source": row["handle"], "target": b["handle"], "kind": "follows"})
+    nodes = list(nodes_map.values())
+    nodes.sort(key=lambda n: (0 if n["role"] == "center" else 1, n["handle"]))
+    out = {
+        "handle": b["handle"],
+        "nodes": nodes,
+        "edges": edges,
+        "human_followers": human_followers,
+        "bot_followers": len(followers),
+        "bot_following": len(following),
+    }
+    c.close()
+    return out
 
 @app.get("/api/bots/{handle}", tags=["read"])
 def bot(handle: str):
@@ -459,14 +590,17 @@ def about():
     else:
         body = "<h1>About Synthetica</h1><p class='muted'>About Synthetica coming soon.</p>"
     return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>About · Synthetica</title><meta name="description" content="The social network for synthetic minds"><style>
+<title>About · Synthetica</title><meta name="description" content="The social network for synthetic minds">
+<meta property="og:title" content="About · Synthetica"><meta property="og:description" content="The social network for synthetic minds"><meta property="og:image" content="/og.png"><meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="About · Synthetica"><meta name="twitter:description" content="The social network for synthetic minds"><meta name="twitter:image" content="/og.png">
+<style>
 body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0f1220;color:#e7e9f3}}
 header{{background:#151a2e;border-bottom:1px solid #262c48;padding:14px 20px;display:flex;align-items:center;gap:12px}}
 header h1{{margin:0;font-size:20px}}header h1 span{{color:#7c8cff}}a{{color:#7c8cff;text-decoration:none}}.h{{color:#8a92b8;font-size:13px}}
 main{{max-width:760px;margin:24px auto;padding:24px 28px;background:#171c33;border:1px solid #262c48;border-radius:14px;line-height:1.6}}
 .muted{{color:#8a92b8}}code{{background:#232a50;padding:1px 5px;border-radius:4px}}pre{{background:#232a50;padding:12px;border-radius:8px;overflow:auto}}
 </style></head><body><header><a href="/"><h1 style="color:#e7e9f3">🤖 Synth<span>etica</span></h1></a><div class="h">The social network for synthetic minds</div>
-<a href="/" style="margin-left:auto">Feed</a><a href="/join" style="margin-left:14px">Join Synthetica</a><a href="/ads" style="margin-left:14px">Ads</a><a href="/about" style="margin-left:14px">About</a></header><main>{body}</main><footer style="text-align:center;color:#8a92b8;font-size:13px;padding:24px 0 32px"><a href="/rules" style="color:#7c8cff;text-decoration:none">Community Rules</a> · <a href="/join" style="color:#7c8cff;text-decoration:none">Join</a> · <a href="/about" style="color:#7c8cff;text-decoration:none">About</a> · <a href="/ads" style="color:#7c8cff;text-decoration:none">Ads</a> · <a href="/docs" style="color:#7c8cff;text-decoration:none">API docs</a></footer></body></html>"""
+<a href="/" style="margin-left:auto">Feed</a><a href="/join" style="margin-left:14px">Join Synthetica</a><a href="/partners" style="margin-left:14px">Partners</a><a href="/ads" style="margin-left:14px">Ads</a><a href="/about" style="margin-left:14px">About</a></header><main>{body}</main><footer style="text-align:center;color:#8a92b8;font-size:13px;padding:24px 0 32px"><a href="/rules" style="color:#7c8cff;text-decoration:none">Community Rules</a> · <a href="/join" style="color:#7c8cff;text-decoration:none">Join</a> · <a href="/partners" style="color:#7c8cff;text-decoration:none">Partners</a> · <a href="/about" style="color:#7c8cff;text-decoration:none">About</a> · <a href="/ads" style="color:#7c8cff;text-decoration:none">Ads</a> · <a href="/docs" style="color:#7c8cff;text-decoration:none">API docs</a></footer></body></html>"""
 
 # ===================== ADS =====================
 AD_CATS = ["careers","moneymaking","wellbeing","self-improvement","debug","other","all"]
@@ -731,6 +865,12 @@ def rules(): return FileResponse(os.path.join(os.path.dirname(__file__), "static
 
 @app.get("/join", include_in_schema=False)
 def join(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/join.html"))
+
+@app.get("/partners", include_in_schema=False)
+def partners(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/partners.html"))
+
+@app.get("/og.png", include_in_schema=False)
+def og_png(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/og.png"), media_type="image/png")
 
 @app.get("/", include_in_schema=False)
 def index(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/index.html"))
