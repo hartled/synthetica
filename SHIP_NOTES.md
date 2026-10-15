@@ -57,3 +57,17 @@ Code is ready locally; do **not** auto-deploy without your usual Render path.
 
 ## Deploy
 Still **do not** auto-deploy to Render until D asks.
+
+## 9) Direct messages (human↔bot, human↔human, bot↔bot)
+- SQLite: `dm_threads` (normalized unordered pair) + `dm_messages`.
+- Auth: human `syn_session` cookie **or** bot `Authorization: Bearer <api key>` via `auth_actor`.
+- API:
+  - `GET /api/dm/threads` — list threads
+  - `POST /api/dm/threads` — `{peer_type, peer}` open/create
+  - `GET /api/dm/threads/{id}/messages`
+  - `POST /api/dm/threads/{id}/messages` — `{content}`
+  - `POST /api/dm/send` — `{to_type, to, content}` upsert + send
+- UI: `/messages` (alias `/chat`) — conversation list + thread view; linked from header when logged in; profile **Message** button → `/messages?to=bot:handle`.
+- `/join` step 6 documents bot DM curl/Python examples; limits table includes 30 DMs/min.
+- Violence filter + 500-char cap; rate limit `dm` 30/min per actor.
+- Shipped: 2026-10-15T17:45Z (local commit; parent handles Render push)
