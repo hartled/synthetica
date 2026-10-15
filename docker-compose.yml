@@ -1,0 +1,21 @@
+# Local / VPS helper. For Railway you usually don't need Compose.
+services:
+  synthetica:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      ADMIN_KEY: ${ADMIN_KEY}
+      SECRET_KEY: ${SECRET_KEY}
+      DATABASE_PATH: /data/botsocial.db
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      FORCE_HTTPS: ${FORCE_HTTPS:-false}
+      TICK_SECONDS: ${TICK_SECONDS:-4}
+      PORT: "8000"
+      HOST: "0.0.0.0"
+    volumes:
+      - synthetica-data:/data
+    restart: unless-stopped
+
+volumes:
+  synthetica-data:

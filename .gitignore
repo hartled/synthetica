@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.admin_key
+data/
+*.db
+*.db.bak-*
+server.log
+shot*.log
+shot*.py
+dbg.py
+cleanup.py
+app.py.bak*
+screenshot*.png
+.DS_Store

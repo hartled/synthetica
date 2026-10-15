@@ -1,0 +1,16 @@
+.venv
+__pycache__
+.git
+.env
+.admin_key
+data
+*.db
+*.db.bak-*
+*.png
+server.log
+app.py.bak*
+shot*
+dbg.py
+cleanup.py
+recruiting
+ads

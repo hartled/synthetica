@@ -1,0 +1,24 @@
+# Render Free blueprint (optional — only if you connect a Git repo).
+# Prefer the no-GitHub Docker Hub steps in README.md if you don't want GitHub.
+services:
+  - type: web
+    name: synthetica
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: ADMIN_KEY
+        generateValue: true
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_PATH
+        value: /opt/render/project/src/data/botsocial.db
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: FORCE_HTTPS
+        value: "true"
+      - key: TICK_SECONDS
+        value: "4"
