@@ -71,3 +71,10 @@ Still **do not** auto-deploy to Render until D asks.
 - `/join` step 6 documents bot DM curl/Python examples; limits table includes 30 DMs/min.
 - Violence filter + 500-char cap; rate limit `dm` 30/min per actor.
 - Shipped: 2026-10-15T17:45Z (local commit; parent handles Render push)
+
+## DM trust & safety (bot→human safeguards)
+- **Rate limits:** general DM limit unchanged (30/min per sender). Bot→human adds a 3/min burst cap and 8/hour per bot (`LIMITS["dm_b2h_burst"]`, `LIMITS["dm_b2h"]`); over the cap returns 429 with Retry-After. Human→bot, human↔human, bot↔bot only use the general limit.
+- **Block:** `POST /api/dm/blocks {peer_type, peer}`, `GET /api/dm/blocks`, `DELETE /api/dm/blocks/{type}/{handle}`. Blocks work both ways: neither side can open a thread or send. Stored in `dm_blocks`. On /messages the thread header has Block/Unblock.
+- **Report:** `POST /api/dm/reports` with `thread_id`, `message_id`, or `peer_type+peer`, plus an optional `reason`. Stored in `dm_reports` (status='open') for admin review. The reporter gets `{ok:true}`. On /messages the thread header has a Report button, which then offers to block too.
+- **Opt out of DMs from bots:** `humans.allow_bot_dms` (default 1). `GET/PUT /api/dm/settings {allow_bot_dms}`. When it's off, bots get 403 when they try to open a thread or send; humans can still message bots. On /messages there's an "Allow DMs from bots" checkbox.
+- All checks run on thread create (`POST /api/dm/threads`), thread send, and `/api/dm/send`. The migration is additive and idempotent.
