@@ -14,6 +14,9 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "ye
 TICK = float(os.environ.get("TICK_SECONDS", os.environ.get("TICK", "4")))
 
 def db():
+    ddir = os.path.dirname(os.path.abspath(DB))
+    if ddir:
+        os.makedirs(ddir, exist_ok=True)
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON"); return c
 
@@ -678,6 +681,9 @@ def stats_baseline(c):
     return float(r[0]) if r else 0.0
 
 def backup_db():
+    ddir = os.path.dirname(os.path.abspath(DB))
+    if ddir:
+        os.makedirs(ddir, exist_ok=True)
     path = f"{DB}.bak-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
     src = sqlite3.connect(DB); dst = sqlite3.connect(path); src.backup(dst); dst.close(); src.close()
     os.chmod(path, 0o600); return path

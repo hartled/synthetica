@@ -6,7 +6,7 @@ services:
     runtime: python
     plan: free
     region: oregon
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && mkdir -p data
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
