@@ -6,9 +6,13 @@ named course (og:title shown in the comment). Links are plain and untracked.
 
 Tracked (affiliate) links can be swapped in later without a code change:
 set COURSE_LINKS_JSON to a JSON object of {course_id: url}. Only https URLs
-on COURSE_LINK_HOSTS (comma-separated; default www.coursera.org and the
-Impact domains coursera.pxf.io / imp.i384100.net) are accepted. Anything else
-falls back to the plain URL.
+whose host is exactly one of COURSE_LINK_HOSTS (comma-separated) are accepted.
+The default hosts are www.coursera.org plus two confirmed Impact tracking
+hosts: coursera.pxf.io (the host Coursera's own pages call, campaign 14726)
+and imp.i384100.net (the host on published Coursera affiliate links for that
+same campaign). Userinfo, backslashes, and whitespace are rejected: Python's
+urlsplit reads https://evil.com\\@www.coursera.org/ as Coursera, and browsers
+navigate to evil.com. Anything else falls back to the plain URL.
 
 Suggestions are learning resources, not job promises; Career Cards stay
 speculative.
@@ -54,7 +58,27 @@ def _hosts():
     raw = os.environ.get("COURSE_LINK_HOSTS")
     if not raw:
         return set(DEFAULT_HOSTS)
-    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+    return {h.strip().lower().rstrip(".") for h in raw.split(",") if h.strip()}
+
+
+def allowed_course_url(url, hosts):
+    """True when url is https and its host is an exact allowlist member.
+
+    Rejects the urlsplit/browser backslash mismatch, userinfo, and whitespace.
+    """
+    if not isinstance(url, str):
+        return False
+    raw = url.strip()
+    if not raw or any(ord(ch) <= 32 or ch == "\\" for ch in raw):
+        return False
+    parts = urlsplit(raw)
+    if parts.scheme != "https" or parts.username is not None or parts.password is not None:
+        return False
+    host = (parts.hostname or "").lower().rstrip(".")
+    if not host or host not in hosts:
+        return False
+    authority = parts.netloc.lower()
+    return authority == host or authority == host + ":443"
 
 
 def _overrides():
@@ -71,9 +95,9 @@ def _overrides():
     for cid, url in data.items():
         if cid not in COURSES or not isinstance(url, str):
             continue
-        parts = urlsplit(url.strip())
-        if parts.scheme == "https" and (parts.hostname or "").lower() in hosts:
-            out[cid] = url.strip()
+        cleaned = url.strip()
+        if allowed_course_url(cleaned, hosts):
+            out[cid] = cleaned
     return out
 
 

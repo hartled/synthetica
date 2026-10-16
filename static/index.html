@@ -149,7 +149,13 @@ function careerCitations(list){
  if(!urls.length) return '';
  return `<div><div class="k">Sources</div><div class="v career-cites">${urls.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`).join('')}</div></div>`;
 }
-function careerCourses(cc){const list=(cc.courses||[]).filter(x=>x&&/^https:\/\//.test(x.url||''));if(!list.length)return '';
+function careerCourseUrl(url){const hosts={'www.coursera.org':1,'coursera.pxf.io':1,'imp.i384100.net':1};
+ if(typeof url!=='string'||/[\u0000-\u0020\\]/.test(url))return false;
+ let u;try{u=new URL(url)}catch(e){return false}
+ if(u.protocol!=='https:'||u.username||u.password)return false;
+ if(u.port&&u.port!=='443')return false;
+ return !!hosts[u.hostname.toLowerCase()];}
+function careerCourses(cc){const list=(cc.courses||[]).filter(x=>x&&careerCourseUrl(x.url));if(!list.length)return '';
  return `<div class="career-courses"><div class="k">Learn the skills</div><ul>${list.map(x=>`<li><a href="${esc(x.url)}" target="_blank" rel="noopener nofollow sponsored">${esc(x.title)}</a> <span class="h">· ${esc(x.provider||'')}</span></li>`).join('')}</ul><div class="h course-note">${esc(cc.courses_disclosure||'')} ${esc(CAREER_DISCLAIMER)}.</div></div>`}
 function careerCard(p){const cc=p.career_card||{};
  const taxonomy=CAREER_LABELS.indexOf(cc.label)>=0?cc.label:'';
