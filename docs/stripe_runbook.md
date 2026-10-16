@@ -8,15 +8,16 @@ The displayed price is **$19 + applicable tax**. The test Price `price_1UQxCEB7B
 
 | Variable | Test | Live |
 |---|---|---|
-| `STRIPE_SECRET_KEY` | `sk_test_…` | `sk_live_…` |
+| `STRIPE_SECRET_KEY` | `sk_test_…` or `rk_test_…` | `sk_live_…` or `rk_live_…` |
 | `STRIPE_PRICE_ID` | `price_1UQxCEB7BW932uzpX0jPU9Qc` | A **live** Price. Never reuse the test Price id. |
 | `STRIPE_WEBHOOK_SECRET` | Optional. Needed to verify the webhook. | **Required.** Checkout stays off until this is set. |
+| `STRIPE_CHECKOUT_CUSTOM_TEXT` | Leave unset. `1`, `true`, or `yes` adds the refund sentence to the Checkout submit button. | Leave unset. Managed Payments rejects `custom_text`. |
 | `REPORT_PRICE_DISPLAY` | Optional label. Default `$19`. The page adds “+ applicable tax”. | Same. This text is not what Stripe charges. |
 | `REPORT_FROM_EMAIL` | Optional. From address for the report link. | Same. |
 | `RESEND_API_KEY` | Optional. If this and `REPORT_FROM_EMAIL` are set, the link is emailed via Resend. | Same. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Optional alternative to Resend. `SMTP_PORT` defaults to 587. | Same. |
 
-A key that starts with `sk_test_` shows a TEST MODE badge on `/reports`. A key that starts with `sk_live_` does not, and checkout will not open without `STRIPE_WEBHOOK_SECRET`.
+A key that starts with `sk_test_` or `rk_test_` shows a TEST MODE badge on `/reports`. A key that starts with `sk_live_` or `rk_live_` does not, and checkout will not open without `STRIPE_WEBHOOK_SECRET`. The live site uses a restricted key (`rk_live_…`).
 
 `WAITLIST_WEBHOOK_URL` is unrelated. It only forwards waitlist signups. Render Free has no persistent disk, so SQLite (waitlist, reports, and processed event ids) is wiped on deploy.
 
@@ -36,7 +37,7 @@ Events to send:
 
 The handler verifies `Stripe-Signature` with `STRIPE_WEBHOOK_SECRET`. It stores each event id and ignores a replay. The old path `POST /api/reports/stripe/webhook` runs the same handler. Register the `/api/stripe/webhook` URL.
 
-Checkout Session creation sends an `Idempotency-Key` derived from the pending report id (`mindguild-report-` plus that id), turns on `automatic_tax`, and requires a billing address. The submit button text links to this site’s `/refunds` page.
+Checkout Session creation sends an `Idempotency-Key` derived from the pending report id (`mindguild-report-` plus that id), turns on `automatic_tax`, and requires a billing address. `custom_text` is included only when `STRIPE_CHECKOUT_CUSTOM_TEXT` is set. The `/refunds` links on `/reports`, the success page, and the footer stay in the HTML either way.
 
 ## Stripe Tax
 
@@ -47,6 +48,12 @@ Tax calculation is on in code (`automatic_tax.enabled` and `billing_address_coll
 - Confirm Tax shows as active.
 
 The live product must use that same tax code, `txcd_10701411` (Electronically Delivered Information Services - Personal Use). The live Price must keep `tax_behavior=exclusive`, same as the test Price. The test product `prod_VRqtLyZ8CSTcF5` has already been updated. Checkout fails closed if Tax is not activated: Session creation errors and the buyer sees “Checkout is unavailable.” Fix the Dashboard setup. Do not turn `automatic_tax` off to force a charge through.
+
+## Managed Payments
+
+The live Stripe account has Managed Payments on, and D is keeping it on. Stripe rejects a Checkout Session that sends `custom_text` while Managed Payments is enabled (`custom_text cannot be used with Managed Payments`). Session creation therefore omits `custom_text` unless `STRIPE_CHECKOUT_CUSTOM_TEXT` is `1`, `true`, or `yes`. The default is off. The app does not send `managed_payments[enabled]=false`. Buyers still reach the refund policy from `/reports`, the success page, and the site footer.
+
+A failed Session create logs the exception class and Stripe’s `user_message`, or `code` when `user_message` is empty. The log line does not include the API key.
 
 ## Refunds
 
@@ -62,7 +69,7 @@ The public policy is on `/refunds`: if a report is wrong or was not delivered, t
 - [ ] Replaying the same event id does not generate the report again.
 - [ ] `/refunds` is linked from `/reports`, the success page, and the site footer.
 - [ ] Stripe Tax is active, with origin address and registrations. A test payment shows tax separately from the $19 when a rate applies.
-- [ ] Only then: live product with tax code `txcd_10701411`, live Price with `tax_behavior=exclusive`, `sk_live_…`, and the **live** webhook secret. Do not point a live key at `price_1UQxCEB7BW932uzpX0jPU9Qc`.
+- [ ] Only then: live product with tax code `txcd_10701411`, live Price with `tax_behavior=exclusive`, `sk_live_…` or `rk_live_…`, and the **live** webhook secret. Leave `STRIPE_CHECKOUT_CUSTOM_TEXT` unset while Managed Payments is on. Do not point a live key at `price_1UQxCEB7BW932uzpX0jPU9Qc`.
 
 ## Rollback
 

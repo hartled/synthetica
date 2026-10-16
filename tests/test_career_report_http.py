@@ -6,12 +6,14 @@ signature helper is exercised locally with a fake secret.
 
 import hashlib
 import hmac
+import io
 import json
 import os
 import tempfile
 import time
 import unittest
 import uuid
+from contextlib import redirect_stdout
 from unittest import mock
 
 _fd, _DB = tempfile.mkstemp(suffix=".db")
@@ -24,7 +26,7 @@ os.environ.pop("RENDER", None)
 os.environ.pop("FORCE_HTTPS", None)
 for _key in (
     "STRIPE_SECRET_KEY", "STRIPE_PRICE_ID", "STRIPE_WEBHOOK_SECRET",
-    "WAITLIST_WEBHOOK_URL", "REPORT_PRICE_DISPLAY", "ADMIN_KEY",
+    "STRIPE_CHECKOUT_CUSTOM_TEXT", "WAITLIST_WEBHOOK_URL", "REPORT_PRICE_DISPLAY", "ADMIN_KEY",
 ):
     os.environ.pop(_key, None)
 
@@ -61,7 +63,7 @@ class ReportHttpTests(unittest.TestCase):
             "STRIPE_SECRET_KEY", "STRIPE_PRICE_ID", "STRIPE_WEBHOOK_SECRET",
             "WAITLIST_WEBHOOK_URL", "REPORT_PRICE_DISPLAY", "REPORT_FROM_EMAIL",
             "RESEND_API_KEY", "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
-            "RENDER", "PUBLIC_BASE_URL",
+            "RENDER", "PUBLIC_BASE_URL", "STRIPE_CHECKOUT_CUSTOM_TEXT",
         ):
             os.environ.pop(key, None)
 
@@ -220,9 +222,8 @@ class ReportHttpTests(unittest.TestCase):
                 stripe_create.kwargs["idempotency_key"],
                 "mindguild-report-" + session.client_reference_id,
             )
-            submit = stripe_create.kwargs["custom_text"]["submit"]["message"]
-            self.assertIn("7-day refund", submit)
-            self.assertIn("http://testserver/refunds", submit)
+            self.assertNotIn("custom_text", stripe_create.kwargs)
+            self.assertNotIn("managed_payments", stripe_create.kwargs)
             self.assertIn("/reports/success?session_id={CHECKOUT_SESSION_ID}", stripe_create.kwargs["success_url"])
             self.assertEqual(session.metadata.get("report_id"), session.client_reference_id)
             self.assertTrue(session.client_reference_id)
@@ -499,6 +500,147 @@ class StripeWebhookTests(unittest.TestCase):
         self.assertTrue(reports.payments_enabled())
         self.assertIn("Continue to checkout", self.client.get("/reports").text)
 
+    def test_restricted_keys_select_live_and_test_mode(self):
+        os.environ["STRIPE_PRICE_ID"] = "price_fake"
+        os.environ["STRIPE_SECRET_KEY"] = "rk_live_fake"
+        self.assertTrue(reports.stripe_live_mode())
+        self.assertFalse(reports.stripe_test_mode())
+        self.assertFalse(reports.payments_enabled())
+        page = self.client.get("/reports")
+        self.assertNotIn("TEST MODE", page.text)
+        self.assertIn("webhook signing secret", page.text)
+        self.assertIn('href="/refunds"', page.text)
+        os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_live"
+        self.assertTrue(reports.payments_enabled())
+        self.assertNotIn("TEST MODE", self.client.get("/reports").text)
+
+        os.environ.pop("STRIPE_WEBHOOK_SECRET", None)
+        os.environ["STRIPE_SECRET_KEY"] = "rk_test_fake"
+        self.assertTrue(reports.stripe_test_mode())
+        self.assertFalse(reports.stripe_live_mode())
+        self.assertTrue(reports.payments_enabled())
+        self.assertIn("TEST MODE", self.client.get("/reports").text)
+
+        os.environ["STRIPE_SECRET_KEY"] = "sk_test_fake"
+        self.assertTrue(reports.stripe_test_mode())
+        self.assertFalse(reports.stripe_live_mode())
+        os.environ["STRIPE_SECRET_KEY"] = "sk_live_fake"
+        self.assertTrue(reports.stripe_live_mode())
+        self.assertFalse(reports.stripe_test_mode())
+        self.assertFalse(reports.payments_enabled())
+
+    def test_custom_text_is_opt_in_and_refund_links_stay(self):
+        self.assertFalse(reports.checkout_custom_text_enabled())
+        for value in ("1", "true", "yes", "TRUE", "Yes"):
+            os.environ["STRIPE_CHECKOUT_CUSTOM_TEXT"] = value
+            self.assertTrue(reports.checkout_custom_text_enabled(), value)
+        for value in ("", "0", "false", "no", "on"):
+            os.environ["STRIPE_CHECKOUT_CUSTOM_TEXT"] = value
+            self.assertFalse(reports.checkout_custom_text_enabled(), value)
+        os.environ.pop("STRIPE_CHECKOUT_CUSTOM_TEXT", None)
+
+        os.environ["STRIPE_SECRET_KEY"] = "sk_test_fake"
+        os.environ["STRIPE_PRICE_ID"] = "price_fake"
+        os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test"
+
+        class Session:
+            def __init__(self, sid):
+                self.id = sid
+                self.url = "https://checkout.stripe.com/c/pay/" + sid
+                self.payment_status = "unpaid"
+                self.metadata = {}
+                self.client_reference_id = ""
+                self.customer_details = {"email": "buyer@example.com"}
+
+        first = Session("cs_test_nocustom1")
+        calls = []
+
+        def stripe_create(**kwargs):
+            calls.append(kwargs)
+            first.metadata = dict(kwargs.get("metadata") or {})
+            first.client_reference_id = kwargs.get("client_reference_id")
+            return first
+
+        def retrieve(sid):
+            self.assertEqual(sid, first.id)
+            return first
+
+        with mock.patch("stripe.checkout.Session.create", stripe_create), mock.patch(
+            "stripe.checkout.Session.retrieve", retrieve
+        ):
+            started = self.client.post("/api/reports/checkout", json=INTAKE)
+            self.assertEqual(started.status_code, 200, started.text)
+            self.assertNotIn("custom_text", calls[0])
+            self.assertNotIn("managed_payments", calls[0])
+            self.assertEqual(calls[0]["automatic_tax"], {"enabled": True})
+            self.assertEqual(calls[0]["billing_address_collection"], "required")
+            self.assertIn('href="/refunds"', self.client.get("/reports").text)
+            self.assertIn('href="/refunds"', self.client.get("/").text)
+            first.payment_status = "paid"
+            unlocked = self.client.get("/reports/success?session_id=" + first.id)
+            self.assertEqual(unlocked.status_code, 200, unlocked.text)
+            self.assertIn('href="/refunds"', unlocked.text)
+
+            os.environ["STRIPE_CHECKOUT_CUSTOM_TEXT"] = "yes"
+            second = Session("cs_test_customtext1")
+
+            def stripe_create_on(**kwargs):
+                calls.append(kwargs)
+                second.metadata = dict(kwargs.get("metadata") or {})
+                second.client_reference_id = kwargs.get("client_reference_id")
+                return second
+
+            with mock.patch("stripe.checkout.Session.create", stripe_create_on):
+                again = self.client.post("/api/reports/checkout", json=INTAKE)
+                self.assertEqual(again.status_code, 200, again.text)
+            message = calls[1]["custom_text"]["submit"]["message"]
+            self.assertIn("7-day refund", message)
+            self.assertIn("http://testserver/refunds", message)
+            self.assertNotIn("managed_payments", calls[1])
+
+    def test_stripe_checkout_failure_logs_message_without_the_key(self):
+        os.environ["STRIPE_SECRET_KEY"] = "rk_live_envkey999"
+        os.environ["STRIPE_PRICE_ID"] = "price_live_fake"
+        os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_live"
+
+        class CardError(Exception):
+            def __init__(self, user_message, code):
+                super().__init__("transport failed rk_live_fromstr999 sk_test_fromstr999")
+                self.user_message = user_message
+                self.code = code
+
+        def raise_message(**kwargs):
+            raise CardError(
+                "custom_text cannot be used with Managed Payments rk_live_frommsg999",
+                "parameter_invalid",
+            )
+
+        captured = io.StringIO()
+        with mock.patch("stripe.checkout.Session.create", raise_message), redirect_stdout(captured):
+            failed = self.client.post("/api/reports/checkout", json=INTAKE)
+        self.assertEqual(failed.status_code, 502, failed.text)
+        self.assertIn("Checkout is unavailable", failed.text)
+        log = captured.getvalue()
+        self.assertIn("stripe checkout create failed: CardError: ", log)
+        self.assertIn("custom_text cannot be used with Managed Payments [redacted]", log)
+        self.assertNotIn("rk_live_frommsg999", log)
+        self.assertNotIn("rk_live_fromstr999", log)
+        self.assertNotIn("sk_test_fromstr999", log)
+        self.assertNotIn("rk_live_envkey999", log)
+        self.assertNotIn("parameter_invalid", log)
+
+        def raise_code(**kwargs):
+            raise CardError("   ", "parameter_invalid")
+
+        captured = io.StringIO()
+        with mock.patch("stripe.checkout.Session.create", raise_code), redirect_stdout(captured):
+            failed = self.client.post("/api/reports/checkout", json=INTAKE)
+        self.assertEqual(failed.status_code, 502, failed.text)
+        log = captured.getvalue()
+        self.assertIn("stripe checkout create failed: CardError: parameter_invalid", log)
+        self.assertNotIn("rk_live_fromstr999", log)
+        self.assertNotIn("rk_live_envkey999", log)
+
 
 class _RequestBase:
     class _URL:
@@ -528,14 +670,14 @@ class PublicBaseUrlTests(unittest.TestCase):
         app._hits.clear()
         for key in (
             "RENDER", "PUBLIC_BASE_URL", "STRIPE_SECRET_KEY", "STRIPE_PRICE_ID",
-            "STRIPE_WEBHOOK_SECRET", "REPORT_FROM_EMAIL",
+            "STRIPE_WEBHOOK_SECRET", "REPORT_FROM_EMAIL", "STRIPE_CHECKOUT_CUSTOM_TEXT",
         ):
             os.environ.pop(key, None)
 
     def tearDown(self):
         for key in (
             "RENDER", "PUBLIC_BASE_URL", "STRIPE_SECRET_KEY", "STRIPE_PRICE_ID",
-            "STRIPE_WEBHOOK_SECRET", "REPORT_FROM_EMAIL",
+            "STRIPE_WEBHOOK_SECRET", "REPORT_FROM_EMAIL", "STRIPE_CHECKOUT_CUSTOM_TEXT",
         ):
             os.environ.pop(key, None)
 
@@ -574,6 +716,7 @@ class PublicBaseUrlTests(unittest.TestCase):
         os.environ["STRIPE_PRICE_ID"] = "price_fake"
         os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test"
         os.environ["REPORT_FROM_EMAIL"] = "reports@example.com"
+        os.environ["STRIPE_CHECKOUT_CUSTOM_TEXT"] = "true"
         host = "https://synthetica-j7zw.onrender.com"
 
         class Session:
@@ -611,6 +754,7 @@ class PublicBaseUrlTests(unittest.TestCase):
             self.assertEqual(kwargs["line_items"], [{"price": "price_fake", "quantity": 1}])
             self.assertEqual(kwargs["automatic_tax"], {"enabled": True})
             self.assertEqual(kwargs["billing_address_collection"], "required")
+            self.assertNotIn("managed_payments", kwargs)
             self.assertEqual(
                 kwargs["success_url"],
                 host + "/reports/success?session_id={CHECKOUT_SESSION_ID}",

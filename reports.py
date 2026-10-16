@@ -2,7 +2,7 @@
 
 Templates, rules, and the curated entries in career_data.py. No language-model
 calls. Payments stay off unless both STRIPE_SECRET_KEY and STRIPE_PRICE_ID
-are set. A live key (sk_live_) also requires STRIPE_WEBHOOK_SECRET.
+are set. A live key (sk_live_ or rk_live_) also requires STRIPE_WEBHOOK_SECRET.
 Fulfillment runs from POST /api/stripe/webhook. /reports/success is the
 fallback and uses the same unlock. While payments are off, a personal report
 is only created for an authenticated admin actor (the named d / ceo keys).
@@ -119,11 +119,22 @@ def stripe_price_id():
 
 
 def stripe_live_mode():
-    return stripe_secret().startswith("sk_live_")
+    secret = stripe_secret()
+    return secret.startswith("sk_live_") or secret.startswith("rk_live_")
 
 
 def stripe_test_mode():
-    return stripe_secret().startswith("sk_test_")
+    secret = stripe_secret()
+    return secret.startswith("sk_test_") or secret.startswith("rk_test_")
+
+
+def checkout_custom_text_enabled():
+    """Submit-button copy is off unless STRIPE_CHECKOUT_CUSTOM_TEXT is set.
+
+    Managed Payments rejects custom_text. Leave the setting unset on the live
+    account. The /refunds links on the site stay in the page HTML.
+    """
+    return (os.environ.get("STRIPE_CHECKOUT_CUSTOM_TEXT") or "").strip().lower() in ("1", "true", "yes")
 
 
 def payments_enabled():
@@ -1035,21 +1046,41 @@ def safe_checkout_url(url):
     return None
 
 
+_STRIPE_KEY_TEXT = re.compile(r"(?:sk|rk)_(?:live|test)_[A-Za-z0-9]+")
+
+
+def stripe_error_log(prefix, exc):
+    """Log a Stripe failure as class name plus user_message, or code.
+
+    The API key is not written. A key that shows up inside the Stripe message
+    is replaced before the line is printed.
+    """
+    message = getattr(exc, "user_message", None)
+    code = getattr(exc, "code", None)
+    detail = message if isinstance(message, str) and message.strip() else code
+    text = "" if detail is None else str(detail)
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = _STRIPE_KEY_TEXT.sub("[redacted]", text)
+    print(prefix + ": " + type(exc).__name__ + ": " + text[:300], flush=True)
+
+
 def create_checkout_session(report_id, success_url, cancel_url, base_url):
     import stripe
     stripe.api_key = stripe_secret()
-    return stripe.checkout.Session.create(
-        mode="payment",
-        line_items=[{"price": stripe_price_id(), "quantity": 1}],
-        success_url=success_url,
-        cancel_url=cancel_url,
-        client_reference_id=report_id,
-        metadata={"report_id": report_id},
-        idempotency_key=checkout_idempotency_key(report_id),
-        automatic_tax={"enabled": True},
-        billing_address_collection="required",
-        custom_text={"submit": {"message": refund_checkout_message(base_url)}},
-    )
+    params = {
+        "mode": "payment",
+        "line_items": [{"price": stripe_price_id(), "quantity": 1}],
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "client_reference_id": report_id,
+        "metadata": {"report_id": report_id},
+        "idempotency_key": checkout_idempotency_key(report_id),
+        "automatic_tax": {"enabled": True},
+        "billing_address_collection": "required",
+    }
+    if checkout_custom_text_enabled():
+        params["custom_text"] = {"submit": {"message": refund_checkout_message(base_url)}}
+    return stripe.checkout.Session.create(**params)
 
 
 def retrieve_checkout_session(session_id):
@@ -1464,8 +1495,8 @@ def register(application):
             )
         except HTTPException:
             raise
-        except Exception:
-            print("stripe checkout create failed", flush=True)
+        except Exception as exc:
+            stripe_error_log("stripe checkout create failed", exc)
             raise HTTPException(502, "Checkout is unavailable")
         sid = _field_get(session, "id")
         url = safe_checkout_url(_field_get(session, "url"))
