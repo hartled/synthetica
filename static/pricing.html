@@ -88,7 +88,8 @@ label.h{display:block;margin-bottom:4px}
 fetch('/api/pricing').then(r=>r.json()).then(d=>{
  if(d.mode==='test')document.getElementById('mode').hidden=false;
  const by={};d.ads.concat(d.featured||[]).forEach(a=>by[a.tier]=a.url);
- document.querySelectorAll('a[data-tier]').forEach(a=>{if(by[a.dataset.tier]){a.href=by[a.dataset.tier];a.rel='noopener'}});
+ const ok=/^https:\/\/buy\.stripe\.com\/[A-Za-z0-9_]+$/;
+ document.querySelectorAll('a[data-tier]').forEach(a=>{const u=by[a.dataset.tier];if(ok.test(u)){a.href=u;a.rel='noopener noreferrer'}});
 }).catch(()=>{});
 document.getElementById('pro-form').addEventListener('submit',async e=>{e.preventDefault();
  const m=document.getElementById('pro-msg'),email=document.getElementById('pro-email').value.trim();

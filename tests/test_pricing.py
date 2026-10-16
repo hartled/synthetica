@@ -70,6 +70,28 @@ class PricingTests(unittest.TestCase):
             links = pricing.ad_links()
         self.assertEqual(links["day"], "https://buy.stripe.com/abc123")
         self.assertEqual(links["week"], pricing.DEFAULT_LINKS["week"])
+        rejected = [
+            "javascript:alert(1)",
+            "https://buy.stripe.com.evil.com/abc",
+            "https://evil@buy.stripe.com/abc",
+            "https://evil.com\\@buy.stripe.com/abc",
+            "https://buy.stripe.com/abc?next=https://evil.example",
+            "https://buy.stripe.com/abc\njavascript:alert(1)",
+            "http://buy.stripe.com/abc",
+        ]
+        for bad in rejected:
+            with mock.patch.dict(os.environ, {"AD_LINK_DAY": bad}):
+                self.assertEqual(pricing.ad_links()["day"], pricing.DEFAULT_LINKS["day"], bad)
+        # Surrounding whitespace is stripped. The value that is published has no newline.
+        with mock.patch.dict(os.environ, {"AD_LINK_DAY": "  https://buy.stripe.com/abc\n"}):
+            self.assertEqual(pricing.ad_links()["day"], "https://buy.stripe.com/abc")
+
+    def test_buy_buttons_accept_only_stripe_payment_links(self):
+        needle = "https:\\/\\/buy\\.stripe\\.com\\/[A-Za-z0-9_]+"
+        for path in ("/pricing", "/ads", "/partners"):
+            text = self.client.get(path).text
+            self.assertIn(needle, text, path)
+            self.assertNotIn("a.href=by[", text, path)
 
     def test_waitlist_stores_once_and_records_event(self):
         for _ in range(2):

@@ -28,7 +28,9 @@ DEFAULT_LINKS = {
 }
 _ENV = {"day": "AD_LINK_DAY", "week": "AD_LINK_WEEK", "section": "AD_LINK_SECTION",
         "featured_week": "FEATURED_LINK_WEEK", "featured_month": "FEATURED_LINK_MONTH"}
-_LINK_OK = re.compile(r"^https://buy\.stripe\.com/[A-Za-z0-9_]+$")
+# \A and \Z, not ^ and $, so a trailing newline cannot slip through.
+# Host is exactly buy.stripe.com. One path segment, no query, userinfo, or slash.
+_LINK_OK = re.compile(r"\Ahttps://buy\.stripe\.com/[A-Za-z0-9_]+\Z")
 _EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$")
 _PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "pricing.html")
 

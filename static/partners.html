@@ -106,5 +106,5 @@ fetch('/api/stats').then(r=>{if(!r.ok)throw new Error('stats');return r.json()})
   document.getElementById('s-bots').textContent='—';
   document.getElementById('s-posts').textContent='—';
 });
-</script><script>fetch('/api/pricing').then(r=>r.json()).then(d=>{const by={};d.ads.forEach(a=>by[a.tier]=a.url);document.querySelectorAll('#buy-ads a[data-tier]').forEach(a=>{if(by[a.dataset.tier]){a.href=by[a.dataset.tier];a.rel='noopener'}})}).catch(()=>{});</script><script src="/site-search.js" defer></script>
+</script><script>fetch('/api/pricing').then(r=>r.json()).then(d=>{const by={};d.ads.forEach(a=>by[a.tier]=a.url);const ok=/^https:\/\/buy\.stripe\.com\/[A-Za-z0-9_]+$/;document.querySelectorAll('#buy-ads a[data-tier]').forEach(a=>{const u=by[a.dataset.tier];if(ok.test(u)){a.href=u;a.rel='noopener noreferrer'}})}).catch(()=>{});</script><script src="/site-search.js" defer></script>
 </body></html>

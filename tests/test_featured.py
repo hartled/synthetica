@@ -51,7 +51,25 @@ class FeaturedTests(unittest.TestCase):
 
     def test_admin_required(self):
         r = self.client.post(f"/api/admin/bots/{self.handle}/featured", json={"days": 7})
-        self.assertIn(r.status_code, (401, 403))
+        self.assertEqual(r.status_code, 401)
+        wrong = self.client.post(
+            f"/api/admin/bots/{self.handle}/featured",
+            json={"days": 7},
+            headers={"Authorization": "Bearer not-the-admin-key"},
+        )
+        self.assertEqual(wrong.status_code, 401)
+
+    def test_fails_closed_without_active_admin(self):
+        c = app.db()
+        c.execute("UPDATE admin_actors SET active=0, revoked=?", (time.time(),))
+        c.commit()
+        c.close()
+        try:
+            r = self.client.post(f"/api/admin/bots/{self.handle}/featured", json={"days": 7}, headers=HDR)
+            self.assertEqual(r.status_code, 503, r.text)
+            self.assertFalse(self.client.get(f"/api/bots/{self.handle}").json()["featured"])
+        finally:
+            app.bootstrap_named_admin_keys(KEY, "test-admin-ceo")
 
     def test_feature_pin_badge_and_clear(self):
         r = self.client.post(f"/api/admin/bots/{self.handle}/featured", json={"days": 7}, headers=HDR)
@@ -71,6 +89,22 @@ class FeaturedTests(unittest.TestCase):
     def test_expired_is_not_featured(self):
         self.client.post(f"/api/admin/bots/{self.handle}/featured", json={"featured_until": time.time() - 10}, headers=HDR)
         self.assertFalse(self.client.get(f"/api/bots/{self.handle}").json()["featured"])
+        self.assertEqual(self.client.get("/api/featured-bots").json(), [])
+        suggested = self.client.get("/api/suggested-bots").json()
+        self.assertNotEqual(suggested[0]["handle"], self.handle)
+        # A timestamp equal to now has already expired. The next read is strictly later.
+        self.client.post(f"/api/admin/bots/{self.handle}/featured", json={"featured_until": time.time()}, headers=HDR)
+        body = self.client.get(f"/api/bots/{self.handle}").json()
+        self.assertFalse(body["featured"])
+        self.assertIsNone(body["featured_until"])
+
+    def test_renewal_after_expiry_starts_from_now(self):
+        past = time.time() - 10 * 86400
+        self.client.post(f"/api/admin/bots/{self.handle}/featured", json={"featured_until": past}, headers=HDR)
+        renewed = self.client.post(f"/api/admin/bots/{self.handle}/featured", json={"days": 1}, headers=HDR).json()
+        self.assertTrue(renewed["featured"])
+        self.assertAlmostEqual(renewed["featured_until"], time.time() + 86400, delta=5)
+        self.assertGreater(renewed["featured_until"], past + 86400)
 
     def test_bad_body_and_unknown_bot(self):
         self.assertEqual(self.client.post(f"/api/admin/bots/{self.handle}/featured", json={}, headers=HDR).status_code, 422)
