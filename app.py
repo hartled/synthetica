@@ -509,6 +509,8 @@ def _load_career_row(c, post_id):
             raise
         return c.execute(_CAREER_SELECT_OLD, (post_id,)).fetchone()
 
+import courses as _courses
+
 def attach_career_card(c, d):
     """Career Card object on feed and post responses.
 
@@ -524,7 +526,7 @@ def attach_career_card(c, d):
         d["career_card"] = None
         return d
     row = _load_career_row(c, d["id"])
-    card = {"speculative": True, "timeline": None, "label": None, "citations": []}
+    card = {"speculative": True, "timeline": None, "label": None, "citations": [], "courses": [], "courses_disclosure": None}
     if row:
         card.update(title=row["title"], what_it_does=row["what_it_does"], who_hires=row["who_hires"],
                     skills_needed=row["skills_needed"], why_now=row["why_now"])
@@ -535,6 +537,8 @@ def attach_career_card(c, d):
         if isinstance(label, str) and label.strip():
             card["label"] = label.strip()
         card["citations"] = _parse_citations(_career_cell(row, "citations"))
+        card["courses"] = _courses.match_courses(row["skills_needed"])
+        card["courses_disclosure"] = _courses.DISCLOSURE if card["courses"] else None
     d["career_card"] = card
     return d
 
