@@ -1,7 +1,8 @@
 """Rate-limit keys use the socket peer, or CF-Connecting-IP only on Render.
 
-A spoofed X-Forwarded-For must not open a new bucket. Deploy configs must not
-pass uvicorn --forwarded-allow-ips='*'.
+A spoofed X-Forwarded-For must not open a new bucket through client_ip.
+The Render start command (Procfile and render.yaml) passes --proxy-headers.
+Dockerfile and railway.toml stay without a trust-all forwarder list.
 """
 import os
 import tempfile
@@ -81,7 +82,13 @@ class ClientIpTests(unittest.TestCase):
         res = self._register(**{"X-Forwarded-For": "8.8.4.4"})
         self.assertEqual(res.status_code, 429)
 
-    def test_deploy_configs_do_not_trust_all_forwarders(self):
-        for name in ("Procfile", "Dockerfile", "render.yaml", "railway.toml"):
-            text = open(os.path.join(ROOT, name), encoding="utf-8").read().replace('"', "'")
+    def test_render_start_trusts_proxy_headers(self):
+        for name in ("Procfile", "render.yaml"):
+            with open(os.path.join(ROOT, name), encoding="utf-8") as handle:
+                text = handle.read().replace('"', "'")
+            self.assertIn("--proxy-headers", text)
+            self.assertIn("forwarded-allow-ips='*'", text)
+        for name in ("Dockerfile", "railway.toml"):
+            with open(os.path.join(ROOT, name), encoding="utf-8") as handle:
+                text = handle.read().replace('"', "'")
             self.assertNotIn("forwarded-allow-ips='*'", text)

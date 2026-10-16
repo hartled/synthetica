@@ -61,6 +61,7 @@ class ReportHttpTests(unittest.TestCase):
             "STRIPE_SECRET_KEY", "STRIPE_PRICE_ID", "STRIPE_WEBHOOK_SECRET",
             "WAITLIST_WEBHOOK_URL", "REPORT_PRICE_DISPLAY", "REPORT_FROM_EMAIL",
             "RESEND_API_KEY", "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
+            "RENDER", "PUBLIC_BASE_URL",
         ):
             os.environ.pop(key, None)
 
@@ -497,6 +498,194 @@ class StripeWebhookTests(unittest.TestCase):
         os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_live"
         self.assertTrue(reports.payments_enabled())
         self.assertIn("Continue to checkout", self.client.get("/reports").text)
+
+
+class _RequestBase:
+    class _URL:
+        def __str__(self):
+            return "http://testserver/"
+
+    base_url = _URL()
+
+
+class PublicBaseUrlTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.pop("RENDER", None)
+        os.environ.pop("FORCE_HTTPS", None)
+        os.environ.pop("PUBLIC_BASE_URL", None)
+        app.bootstrap_named_admin_keys(KEY_D, KEY_CEO)
+        cls.client = TestClient(app.app)
+        cls.client.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+        os.environ.pop("RENDER", None)
+        os.environ.pop("PUBLIC_BASE_URL", None)
+
+    def setUp(self):
+        app._hits.clear()
+        for key in (
+            "RENDER", "PUBLIC_BASE_URL", "STRIPE_SECRET_KEY", "STRIPE_PRICE_ID",
+            "STRIPE_WEBHOOK_SECRET", "REPORT_FROM_EMAIL",
+        ):
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        for key in (
+            "RENDER", "PUBLIC_BASE_URL", "STRIPE_SECRET_KEY", "STRIPE_PRICE_ID",
+            "STRIPE_WEBHOOK_SECRET", "REPORT_FROM_EMAIL",
+        ):
+            os.environ.pop(key, None)
+
+    def test_render_default_override_and_invalid_values(self):
+        self.assertEqual(reports.public_base_url(), "")
+        self.assertEqual(reports.public_base_url(_RequestBase()), "http://testserver")
+        os.environ["RENDER"] = "true"
+        self.assertEqual(
+            reports.public_base_url(_RequestBase()),
+            "https://synthetica-j7zw.onrender.com",
+        )
+        os.environ["PUBLIC_BASE_URL"] = "https://pay.example.com/"
+        self.assertEqual(reports.public_base_url(_RequestBase()), "https://pay.example.com")
+        os.environ.pop("RENDER", None)
+        self.assertEqual(reports.public_base_url(_RequestBase()), "https://pay.example.com")
+        for bad in (
+            "https://evil.example/path",
+            "javascript:alert(1)",
+            "https://user:pass@pay.example.com",
+            "not a url",
+            "",
+        ):
+            os.environ["PUBLIC_BASE_URL"] = bad
+            os.environ["RENDER"] = "true"
+            self.assertEqual(
+                reports.public_base_url(_RequestBase()),
+                "https://synthetica-j7zw.onrender.com",
+                bad,
+            )
+            os.environ.pop("RENDER", None)
+            self.assertEqual(reports.public_base_url(_RequestBase()), "http://testserver", bad)
+
+    def test_checkout_success_and_webhook_links_use_public_base(self):
+        os.environ["RENDER"] = "true"
+        os.environ["STRIPE_SECRET_KEY"] = "sk_test_fake"
+        os.environ["STRIPE_PRICE_ID"] = "price_fake"
+        os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test"
+        os.environ["REPORT_FROM_EMAIL"] = "reports@example.com"
+        host = "https://synthetica-j7zw.onrender.com"
+
+        class Session:
+            def __init__(self, sid):
+                self.id = sid
+                self.url = "https://checkout.stripe.com/c/pay/" + sid
+                self.payment_status = "unpaid"
+                self.metadata = {}
+                self.client_reference_id = ""
+                self.customer_details = {"email": "Buyer@Example.com"}
+
+        checkout = Session("cs_test_publicbase1")
+        mailed = []
+
+        def stripe_create(**kwargs):
+            checkout.metadata = dict(kwargs.get("metadata") or {})
+            checkout.client_reference_id = kwargs.get("client_reference_id")
+            stripe_create.kwargs = kwargs
+            return checkout
+
+        def retrieve(sid):
+            self.assertEqual(sid, checkout.id)
+            return checkout
+
+        def capture_mail(to_email, report_url, refunds_url):
+            mailed.append((to_email, report_url, refunds_url))
+            return True
+
+        with mock.patch("stripe.checkout.Session.create", stripe_create), mock.patch(
+            "stripe.checkout.Session.retrieve", retrieve
+        ), mock.patch("reports.send_report_link", capture_mail):
+            started = self.client.post("/api/reports/checkout", json=INTAKE)
+            self.assertEqual(started.status_code, 200, started.text)
+            kwargs = stripe_create.kwargs
+            self.assertEqual(kwargs["line_items"], [{"price": "price_fake", "quantity": 1}])
+            self.assertEqual(kwargs["automatic_tax"], {"enabled": True})
+            self.assertEqual(kwargs["billing_address_collection"], "required")
+            self.assertEqual(
+                kwargs["success_url"],
+                host + "/reports/success?session_id={CHECKOUT_SESSION_ID}",
+            )
+            self.assertEqual(kwargs["cancel_url"], host + "/reports?checkout=cancel")
+            self.assertEqual(
+                kwargs["idempotency_key"],
+                "mindguild-report-" + checkout.client_reference_id,
+            )
+            message = kwargs["custom_text"]["submit"]["message"]
+            self.assertIn(host + "/refunds", message)
+            self.assertNotIn("http://testserver", message)
+            self.assertNotIn("http://testserver", kwargs["success_url"])
+            checkout.payment_status = "paid"
+            unlocked = self.client.get(
+                "/reports/success?session_id=" + checkout.id,
+                follow_redirects=False,
+            )
+            self.assertEqual(unlocked.status_code, 200, unlocked.text)
+            self.assertEqual(len(mailed), 1)
+            self.assertEqual(mailed[0][0], "buyer@example.com")
+            self.assertEqual(mailed[0][1], host + "/reports/" + checkout.client_reference_id)
+            self.assertEqual(mailed[0][2], host + "/refunds")
+
+            os.environ["PUBLIC_BASE_URL"] = "https://pay.example.com/"
+            hook = Session("cs_test_publicbase2")
+
+            def stripe_create_hook(**kwargs):
+                hook.metadata = dict(kwargs.get("metadata") or {})
+                hook.client_reference_id = kwargs.get("client_reference_id")
+                stripe_create_hook.kwargs = kwargs
+                return hook
+
+            def retrieve_hook(sid):
+                self.assertEqual(sid, hook.id)
+                return hook
+
+            with mock.patch("stripe.checkout.Session.create", stripe_create_hook), mock.patch(
+                "stripe.checkout.Session.retrieve", retrieve_hook
+            ):
+                second = self.client.post("/api/reports/checkout", json=INTAKE)
+                self.assertEqual(second.status_code, 200, second.text)
+                self.assertEqual(
+                    stripe_create_hook.kwargs["success_url"],
+                    "https://pay.example.com/reports/success?session_id={CHECKOUT_SESSION_ID}",
+                )
+                self.assertEqual(
+                    stripe_create_hook.kwargs["cancel_url"],
+                    "https://pay.example.com/reports?checkout=cancel",
+                )
+                self.assertIn(
+                    "https://pay.example.com/refunds",
+                    stripe_create_hook.kwargs["custom_text"]["submit"]["message"],
+                )
+                hook.payment_status = "paid"
+                raw = json.dumps({
+                    "id": "evt_test_publicbase",
+                    "type": "checkout.session.completed",
+                    "data": {"object": {"id": hook.id, "object": "checkout.session"}},
+                }).encode()
+                good = self.client.post(
+                    "/api/stripe/webhook",
+                    content=raw,
+                    headers={
+                        "Stripe-Signature": _sign("whsec_test", raw),
+                        "Content-Type": "application/json",
+                    },
+                )
+                self.assertEqual(good.status_code, 200, good.text)
+                self.assertEqual(len(mailed), 2)
+                self.assertEqual(
+                    mailed[1][1],
+                    "https://pay.example.com/reports/" + hook.client_reference_id,
+                )
+                self.assertEqual(mailed[1][2], "https://pay.example.com/refunds")
 
 
 if __name__ == "__main__":
