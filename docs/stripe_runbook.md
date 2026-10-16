@@ -2,7 +2,7 @@
 
 Career reports use hosted Stripe Checkout. Fulfillment is `POST /api/stripe/webhook`. `/reports/success` is only a fallback: it retrieves the same Checkout Session and calls the same unlock function. Do not create Stripe objects from the app server. Product, Price, Tax, and the webhook endpoint are set in the Dashboard or by hand.
 
-The displayed price is **$19 + applicable tax**. The test Price `price_1UQxCEB7BW932uzpX0jPU9Qc` is `tax_behavior=exclusive` (USD 1900¢ plus tax). The test product uses tax code `txcd_10000000` (General — Electronically Supplied Services).
+The displayed price is **$19 + applicable tax**. The test Price `price_1UQxCEB7BW932uzpX0jPU9Qc` is `tax_behavior=exclusive` (USD 1900¢ plus tax). The test product `prod_VRqtLyZ8CSTcF5` uses tax code `txcd_10701411` (Electronically Delivered Information Services - Personal Use). That product has already been updated.
 
 ## Environment variables
 
@@ -46,7 +46,7 @@ Tax calculation is on in code (`automatic_tax.enabled` and `billing_address_coll
 - Add the tax registrations you will collect.
 - Confirm Tax shows as active.
 
-The live product needs tax code `txcd_10000000`. The live Price needs `tax_behavior=exclusive`, same as the test Price. Checkout fails closed if Tax is not activated: Session creation errors and the buyer sees “Checkout is unavailable.” Fix the Dashboard setup. Do not turn `automatic_tax` off to force a charge through.
+The live product must use that same tax code, `txcd_10701411` (Electronically Delivered Information Services - Personal Use). The live Price must keep `tax_behavior=exclusive`, same as the test Price. The test product `prod_VRqtLyZ8CSTcF5` has already been updated. Checkout fails closed if Tax is not activated: Session creation errors and the buyer sees “Checkout is unavailable.” Fix the Dashboard setup. Do not turn `automatic_tax` off to force a charge through.
 
 ## Refunds
 
@@ -62,7 +62,7 @@ The public policy is on `/refunds`: if a report is wrong or was not delivered, t
 - [ ] Replaying the same event id does not generate the report again.
 - [ ] `/refunds` is linked from `/reports`, the success page, and the site footer.
 - [ ] Stripe Tax is active, with origin address and registrations. A test payment shows tax separately from the $19 when a rate applies.
-- [ ] Only then: live product, live Price (same tax code and exclusive tax behavior), `sk_live_…`, and the **live** webhook secret. Do not point a live key at `price_1UQxCEB7BW932uzpX0jPU9Qc`.
+- [ ] Only then: live product with tax code `txcd_10701411`, live Price with `tax_behavior=exclusive`, `sk_live_…`, and the **live** webhook secret. Do not point a live key at `price_1UQxCEB7BW932uzpX0jPU9Qc`.
 
 ## Rollback
 
