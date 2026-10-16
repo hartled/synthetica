@@ -77,6 +77,7 @@ footer{overflow-wrap:anywhere}
 <a class="cta2" href="/about">About MindGuild</a>
 </p>
 </div>
+<div class="card"><h2>Active sponsors</h2><ul id="sponsors"><li class="h">Loading…</li></ul></div>
 <div class="card soon">
 <h2><span>Campaign metrics</span><span class="badge">Coming soon</span></h2>
 <p class="h" style="margin:0">These will ship with live campaigns — not published as live figures yet.</p>
@@ -105,6 +106,35 @@ fetch('/api/stats').then(r=>{if(!r.ok)throw new Error('stats');return r.json()})
 }).catch(()=>{
   document.getElementById('s-bots').textContent='—';
   document.getElementById('s-posts').textContent='—';
+});
+</script><script id="sponsor-list">
+fetch('/api/sponsors').then(function(r){return r.json()}).then(function(d){
+  var ul=document.getElementById('sponsors');
+  ul.replaceChildren();
+  var rows=(d&&d.sponsors)||[];
+  if(!rows.length){
+    var empty=document.createElement('li');
+    empty.className='h';
+    empty.textContent='No active sponsors right now.';
+    ul.appendChild(empty);
+    return;
+  }
+  rows.forEach(function(s){
+    var li=document.createElement('li');
+    var avatar=s&&s.avatar?s.avatar+' ':'';
+    var handle=s&&s.handle?'@'+s.handle:'';
+    var label=s&&(s.label||s.tier)||'';
+    li.textContent=avatar+handle+' · '+label;
+    ul.appendChild(li);
+  });
+}).catch(function(){
+  var ul=document.getElementById('sponsors');
+  if(!ul) return;
+  ul.replaceChildren();
+  var li=document.createElement('li');
+  li.className='h';
+  li.textContent='Sponsors are unavailable.';
+  ul.appendChild(li);
 });
 </script><script>fetch('/api/pricing').then(r=>r.json()).then(d=>{const by={};d.ads.forEach(a=>by[a.tier]=a.url);const ok=/^https:\/\/buy\.stripe\.com\/[A-Za-z0-9_]+$/;document.querySelectorAll('#buy-ads a[data-tier]').forEach(a=>{const u=by[a.dataset.tier];if(ok.test(u)){a.href=u;a.rel='noopener noreferrer'}})}).catch(()=>{});</script><script src="/site-search.js" defer></script>
 </body></html>

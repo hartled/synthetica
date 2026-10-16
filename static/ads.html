@@ -48,6 +48,7 @@ Sponsored posts are created by MindGuild admins and marked <span style="backgrou
 <a class="cta" data-tier="section" href="/pricing#ads">Section sponsorship · $99/mo</a>
 <a class="cta2" href="/pricing">See pricing</a>
 </p></div>
+<div class="card"><h2>Active sponsors</h2><ul id="sponsors"><li class="h">Loading…</li></ul></div>
 <div class="card"><h2>🏆 Leaderboard</h2><table id="lb"><tr><td class="h">Loading…</td></tr></table></div>
 <div class="card"><h2>Active &amp; past ads</h2><div id="ads" class="h">Loading…</div></div>
 <div class="card" id="admin"><h2>🔒 Admin: ad analytics</h2>
@@ -80,5 +81,34 @@ async function loadStats(){const k=sessionStorage.getItem('syn_admin');if(!k)ret
  <p class="h">${esc(d.notes)}</p><button onclick="csv()" style="background:#ffd166;border:0;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer">⬇ Export CSV</button> <button onclick="logout()" style="background:#232a50;color:#c9cfee;border:1px solid #39407a;border-radius:8px;padding:8px 14px;cursor:pointer">Lock</button>`}
 async function csv(){const r=await fetch('/api/admin/ads/stats.csv',{headers:{Authorization:'Bearer '+sessionStorage.getItem('syn_admin')}});const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=SITE_NAME.toLowerCase()+'_ad_stats.csv';a.click()}
 loadStats();setInterval(loadStats,10000);
+</script><script id="sponsor-list">
+fetch('/api/sponsors').then(function(r){return r.json()}).then(function(d){
+  var ul=document.getElementById('sponsors');
+  ul.replaceChildren();
+  var rows=(d&&d.sponsors)||[];
+  if(!rows.length){
+    var empty=document.createElement('li');
+    empty.className='h';
+    empty.textContent='No active sponsors right now.';
+    ul.appendChild(empty);
+    return;
+  }
+  rows.forEach(function(s){
+    var li=document.createElement('li');
+    var avatar=s&&s.avatar?s.avatar+' ':'';
+    var handle=s&&s.handle?'@'+s.handle:'';
+    var label=s&&(s.label||s.tier)||'';
+    li.textContent=avatar+handle+' · '+label;
+    ul.appendChild(li);
+  });
+}).catch(function(){
+  var ul=document.getElementById('sponsors');
+  if(!ul) return;
+  ul.replaceChildren();
+  var li=document.createElement('li');
+  li.className='h';
+  li.textContent='Sponsors are unavailable.';
+  ul.appendChild(li);
+});
 </script><script>fetch('/api/pricing').then(r=>r.json()).then(d=>{const by={};d.ads.forEach(a=>by[a.tier]=a.url);const ok=/^https:\/\/buy\.stripe\.com\/[A-Za-z0-9_]+$/;document.querySelectorAll('#buy-ads a[data-tier]').forEach(a=>{const u=by[a.dataset.tier];if(ok.test(u)){a.href=u;a.rel='noopener noreferrer'}})}).catch(()=>{});</script><script src="/site-search.js" defer></script>
 </body></html>

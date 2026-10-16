@@ -4,7 +4,9 @@ Templates, rules, and the curated entries in career_data.py. No language-model
 calls. Payments stay off unless both STRIPE_SECRET_KEY and STRIPE_PRICE_ID
 are set. A live key (sk_live_ or rk_live_) also requires STRIPE_WEBHOOK_SECRET.
 Fulfillment runs from POST /api/stripe/webhook. /reports/success is the
-fallback and uses the same unlock. While payments are off, a personal report
+fallback and uses the same unlock. Featured listings and ad sponsorships use
+that same endpoint when metadata.tier is a placement tier; that path lives in
+fulfillment.py and does not unlock a career report. While payments are off, a personal report
 is only created for an authenticated admin actor (the named d / ceo keys).
 /reports/sample is public and uses a fictional persona.
 
@@ -977,6 +979,8 @@ def ensure_tables(c):
         id TEXT PRIMARY KEY,
         event_type TEXT NOT NULL,
         created REAL NOT NULL)""")
+    import fulfillment
+    fulfillment.ensure_tables(c)
 
 
 def save_waitlist(c, cleaned):
@@ -1391,6 +1395,8 @@ def register(application):
         c.close()
 
     funnel.install(application)
+    import fulfillment
+    fulfillment.install(application)
 
     def _limit(request, kind):
         appmod.rate(kind, appmod.client_ip(request))
@@ -1596,6 +1602,9 @@ def register(application):
         data = event.get("data", {}) if isinstance(event, dict) else _field_get(event, "data")
         obj = data.get("object") if isinstance(data, dict) else _field_get(data, "object")
         event_type = event.get("type") if isinstance(event, dict) else _field_get(event, "type")
+        import fulfillment
+        if event_type == "invoice.paid":
+            return fulfillment.apply_invoice_event(db, event, obj)
         if event_type not in WEBHOOK_EVENTS:
             return {"ok": True, "ignored": True}
         sid = _field_get(obj, "id")
@@ -1610,6 +1619,8 @@ def register(application):
             raise HTTPException(502, "Checkout is unavailable")
         if str(_field_get(session, "id") or "") != str(sid):
             raise HTTPException(404, "report not found")
+        if fulfillment.is_placement_session(session):
+            return fulfillment.apply_checkout_event(db, event, session)
         return apply_checkout_event(db, event, session, public_base_url(request))
 
     @application.post("/api/stripe/webhook", tags=["reports"], summary="Stripe webhook; signature required")

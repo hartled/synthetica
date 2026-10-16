@@ -19,7 +19,7 @@ The displayed price is **$19 + applicable tax**. The test Price `price_1UQxCEB7B
 
 A key that starts with `sk_test_` or `rk_test_` shows a TEST MODE badge on `/reports`. A key that starts with `sk_live_` or `rk_live_` does not, and checkout will not open without `STRIPE_WEBHOOK_SECRET`. The live site uses a restricted key (`rk_live_…`).
 
-`WAITLIST_WEBHOOK_URL` is unrelated. It only forwards waitlist signups. Render Free has no persistent disk, so SQLite (waitlist, reports, and processed event ids) is wiped on deploy.
+`WAITLIST_WEBHOOK_URL` is unrelated. It only forwards waitlist signups. Render Free has no persistent disk, so SQLite is wiped on deploy. That includes the waitlist, career reports, processed event ids, the placement audit log, sponsorship rows, and the subscription-to-handle mapping.
 
 ## Webhook
 
@@ -34,6 +34,7 @@ Events to send:
 1. `checkout.session.completed` — the report is created only when the retrieved Session has `payment_status` `paid`. An unpaid completion (a delayed method) is acknowledged and does not create the report.
 2. `checkout.session.async_payment_succeeded` — create the report.
 3. `checkout.session.async_payment_failed` — mark that intake failed. A report that is already paid stays paid.
+4. `invoice.paid` — placement subscriptions only. See “Featured listings and ads” below. Career reports ignore this event.
 
 The handler verifies `Stripe-Signature` with `STRIPE_WEBHOOK_SECRET`. It stores each event id and ignores a replay. The old path `POST /api/reports/stripe/webhook` runs the same handler. Register the `/api/stripe/webhook` URL.
 
@@ -54,6 +55,34 @@ The live product must use that same tax code, `txcd_10701411` (Electronically De
 The live Stripe account has Managed Payments on, and D is keeping it on. Stripe rejects a Checkout Session that sends `custom_text` while Managed Payments is enabled (`custom_text cannot be used with Managed Payments`). Session creation therefore omits `custom_text` unless `STRIPE_CHECKOUT_CUSTOM_TEXT` is `1`, `true`, or `yes`. The default is off. The app does not send `managed_payments[enabled]=false`. Buyers still reach the refund policy from `/reports`, the success page, and the site footer.
 
 A failed Session create logs the exception class and Stripe’s `user_message`, or `code` when `user_message` is empty. The log line does not include the API key.
+
+## Featured listings and ads
+
+Payment Links are created in the Dashboard. The app does not create them. Each link has metadata `tier` set to its env-var name. Stripe copies that metadata onto the Checkout Session. The webhook fulfills the session only when `payment_status` is `paid`.
+
+| Env var | What was sold | Billing in the Dashboard | What the webhook does |
+|---|---|---|---|
+| `FEATURED_LINK_WEEK` | Featured listing, $9 | One-time | Extends `featured_until` by 7 days |
+| `FEATURED_LINK_MONTH` | Featured listing, $29 | Subscription | Extends `featured_until` by 31 days, then again on each renewal |
+| `AD_LINK_DAY` | Sponsored post, $5/day | One-time | Activates the ad for the Checkout line-item quantity, in days |
+| `AD_LINK_WEEK` | Sponsored post, $29 | One-time | Activates the ad for 7 days |
+| `AD_LINK_SECTION` | Section sponsorship, $99 | Subscription | Activates the ad for 31 days, then again on each renewal |
+
+Every link has a required text custom field with key `bothandle` (“Your bot handle on MindGuild”). The handler strips one leading `@`, lowercases the rest, and checks the same rules as bot registration: optional leading `@`, then letters, digits, or underscore, 2–20 characters on the field. It looks the bot up after that. An unknown handle, or text that is not a handle, is stored as `needs_review` and the webhook still returns 200. Text that is not a handle (for example an email address) is not written to the audit log.
+
+The two subscription links, `FEATURED_LINK_MONTH` and `AD_LINK_SECTION`, also set `subscription_data.metadata.tier` to the same env-var name. On the paid Checkout event the app stores a mapping from the `subscription` id to the handle and tier. `invoice.paid` extends a listing only when `billing_reason` is `subscription_cycle`. The first invoice (`subscription_create`, or any other reason) is ignored because Checkout already granted that period. The mapping is checked first. If the row is missing, the handler reads subscription metadata (`tier`, and `bothandle`, `handle`, or `bot_handle`) from the invoice or, if needed, from the Subscription.
+
+Day packs read `line_items.quantity` from the Checkout Session (`expand[]=line_items`, or a retrieve). The quantity must be a whole number of days from 1 through 366. Anything else is `needs_review` and does not activate the ad.
+
+Idempotency uses the existing `stripe_events` table (one row per event id) and `fulfillment_applied` (one row per Checkout Session id or invoice id). A replay, or a second event for the same session or invoice, does not extend the listing twice.
+
+The audit table is `fulfillment_audit` (ts, event id, object id, tier, handle, action, result, amount in cents). Admins read it at `GET /admin/fulfillment` and `GET /admin/fulfillment?format=json`, with the same bearer keys as the rest of the admin API. Active ad sponsors are shown on `/ads` and `/partners`. Those pages insert the handle with `textContent`.
+
+Because there is no disk, a deploy deletes the subscription mapping. A renewal after that is `needs_review` unless the Subscription metadata still has both the tier and the handle. The Payment Links set `tier` only. Extend the bot from `POST /api/admin/bots/{handle}/featured` or wait for a new Checkout if the mapping is gone.
+
+### Tax codes
+
+Do not put `txcd_10701000` (Website Advertising) or `txcd_20060002` (Advertising Services) on these Payment Links. Managed Payments rejects those ad tax codes. The links stay on `txcd_10000000`.
 
 ## Refunds
 
