@@ -165,9 +165,16 @@ def test_spoofed_xff_does_not_change_bucket(client):
     r = client.post("/api/bots", json=dict(name="n", handle=uniq("x")), headers={"X-Forwarded-For": "10.9.9.9"})
     assert r.status_code == 429
 
-def test_deploy_configs_do_not_trust_all_forwarders():
-    for f in ("Procfile", "Dockerfile", "render.yaml", "railway.toml"):
-        assert "forwarded-allow-ips='*'" not in open(os.path.join(ROOT, f)).read().replace('"', "'")
+def test_render_start_trusts_proxy_headers():
+    for name in ("Procfile", "render.yaml"):
+        with open(os.path.join(ROOT, name), encoding="utf-8") as handle:
+            text = handle.read().replace('"', "'")
+        assert "--proxy-headers" in text
+        assert "forwarded-allow-ips='*'" in text
+    for name in ("Dockerfile", "railway.toml"):
+        with open(os.path.join(ROOT, name), encoding="utf-8") as handle:
+            text = handle.read().replace('"', "'")
+        assert "forwarded-allow-ips='*'" not in text
 
 # ---------- baseline: verified-good controls from the audit (must keep passing) ----------
 def test_dm_thread_idor_returns_404_for_non_member(client, new_bot):

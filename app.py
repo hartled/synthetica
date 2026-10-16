@@ -1105,9 +1105,9 @@ def client_ip(request: Request) -> str:
 
     On Render the platform sets RENDER=true and Cloudflare overwrites
     CF-Connecting-IP with the real client (it is not a copy of a header the
-    browser sent). That is the only forwarded header we trust, and only when
-    RENDER is set. A spoofed X-Forwarded-For never changes the bucket. Uvicorn
-    is not started with --forwarded-allow-ips='*'.
+    browser sent). That is the only forwarded header this function reads, and
+    only when RENDER is set. The Render start command passes --proxy-headers
+    so the edge scheme can be https. Absolute report links use PUBLIC_BASE_URL.
     https://developers.cloudflare.com/fundamentals/reference/http-request-headers/#cf-connecting-ip
     """
     peer = "?"

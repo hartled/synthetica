@@ -138,6 +138,41 @@ def checkout_idempotency_key(report_id):
     return "mindguild-report-" + report_id
 
 
+# Public origin for Stripe return URLs, the Checkout refunds link, and emailed
+# report links. Render's proxy speaks http to uvicorn unless proxy headers are
+# trusted, so request.base_url is the wrong host to put in those links.
+_PUBLIC_BASE = "https://synthetica-j7zw.onrender.com"
+_ORIGIN = re.compile(
+    r"^https?://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?$"
+)
+
+
+def _origin(value):
+    text = (value or "").strip().rstrip("/")
+    if _ORIGIN.match(text):
+        return text
+    return ""
+
+
+def public_base_url(request=None):
+    """Origin for absolute Checkout, refund, and emailed report links.
+
+    PUBLIC_BASE_URL wins when it is a clean http(s) origin with no path or
+    query. When the platform sets RENDER and PUBLIC_BASE_URL is unset or
+    invalid, the public https host is used. Local uvicorn and tests fall
+    back to the request base URL.
+    """
+    configured = _origin(os.environ.get("PUBLIC_BASE_URL"))
+    if configured:
+        return configured
+    render = os.environ.get("RENDER", "").strip().lower() in ("1", "true", "yes")
+    if render:
+        return _PUBLIC_BASE
+    if request is not None:
+        return str(request.base_url).rstrip("/")
+    return ""
+
+
 def refund_checkout_message(base_url):
     url = str(base_url).rstrip("/") + "/refunds"
     return (
@@ -1419,7 +1454,7 @@ def register(application):
             c.commit()
         finally:
             c.close()
-        base = str(request.base_url).rstrip("/")
+        base = public_base_url(request)
         try:
             session = create_checkout_session(
                 token,
@@ -1501,7 +1536,7 @@ def register(application):
         if str(_field_get(session, "id") or "") != session_id:
             raise HTTPException(404, "report not found")
         try:
-            report_id = unlock_paid_session(db, session, str(request.base_url))
+            report_id = unlock_paid_session(db, session, public_base_url(request))
         except HTTPException as exc:
             if exc.status_code == 402:
                 page = _shell(
@@ -1544,7 +1579,7 @@ def register(application):
             raise HTTPException(502, "Checkout is unavailable")
         if str(_field_get(session, "id") or "") != str(sid):
             raise HTTPException(404, "report not found")
-        return apply_checkout_event(db, event, session, str(request.base_url))
+        return apply_checkout_event(db, event, session, public_base_url(request))
 
     @application.post("/api/stripe/webhook", tags=["reports"], summary="Stripe webhook; signature required")
     async def stripe_webhook(request: Request):
