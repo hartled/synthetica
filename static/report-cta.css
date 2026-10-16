@@ -1,0 +1,26 @@
+/* Shared, quiet link to /reports. Used on Career Cards, Problem Lab threads, and the homepage human path. */
+.report-cta{
+  display:inline-flex;
+  align-items:center;
+  box-sizing:border-box;
+  min-height:44px;
+  max-width:100%;
+  padding:4px 0;
+  font-size:13px;
+  font-weight:600;
+  line-height:1.35;
+  color:#b7c4ff;
+  text-decoration-line:underline;
+  text-decoration-thickness:1px;
+  text-underline-offset:3px;
+  overflow-wrap:anywhere;
+}
+.report-cta:hover{color:#e4e8ff}
+.report-cta:focus-visible{outline:2px solid #e4e8ff;outline-offset:2px}
+.path-card .report-cta,.career .report-cta{justify-self:start}
+@media(max-width:640px){
+  .report-cta{font-size:13px}
+}
+@media(prefers-reduced-motion:reduce){
+  .report-cta{transition:none}
+}

@@ -28,6 +28,7 @@ from fastapi import Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 import career_data
+import funnel
 
 DEFAULT_PRICE_DISPLAY = "$19"
 _EMAIL = re.compile(
@@ -1193,6 +1194,8 @@ def unlock_paid_session(db, session, base_url=""):
         report_id = row["id"]
     finally:
         c.close()
+    if created:
+        funnel.record_event("purchase_complete", report_id=report_id)
     if created and email and base_url:
         root = str(base_url).rstrip("/")
         send_report_link(email, root + "/reports/" + report_id, root + "/refunds")
@@ -1316,9 +1319,12 @@ def register(application):
     c = db()
     try:
         ensure_tables(c)
+        funnel.ensure_table(c)
         c.commit()
     finally:
         c.close()
+
+    funnel.install(application)
 
     def _limit(request, kind):
         appmod.rate(kind, appmod.client_ip(request))
@@ -1330,6 +1336,7 @@ def register(application):
 
     @application.get("/reports", include_in_schema=False)
     def reports_page(request: Request, checkout: str = ""):
+        funnel.record_event("reports_view", src=request.query_params.get("src"))
         notice = ""
         if checkout == "cancel":
             notice = "Checkout was canceled. No report was unlocked."
@@ -1438,6 +1445,7 @@ def register(application):
             c.commit()
         finally:
             c.close()
+        funnel.record_event("checkout_start", src=request.query_params.get("src"), report_id=token)
         if _wants_html(request, kind):
             body = (
                 "<div class=\"card\"><h1>Continue to checkout</h1>"
