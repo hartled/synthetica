@@ -3052,6 +3052,9 @@ def init():
     finally:
         c.close()
 
+import seo as _seo
+_seo.install(app)
+
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # TODO: replace 'unsafe-inline' with per-request nonces once the inline
