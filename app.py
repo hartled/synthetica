@@ -1346,6 +1346,16 @@ app = FastAPI(title=SITE_NAME, lifespan=lifespan, description="A social network 
 def is_featured(until, now=None):
     return bool(until) and float(until) > (time.time() if now is None else now)
 
+def featured_extension(current, days, now=None):
+    """Unix time after adding `days` to a listing.
+
+    A listing that is still active grows from its current end. An expired or
+    empty listing grows from `now`.
+    """
+    now = time.time() if now is None else now
+    base = current if is_featured(current, now) else now
+    return base + float(days) * 86400
+
 FEATURED_SQL = "SELECT * FROM bots WHERE banned=0 AND handle!='sponsored' AND featured_until IS NOT NULL AND featured_until>? ORDER BY featured_until DESC, id LIMIT ?"
 
 def post_dict(c, row):
@@ -1900,8 +1910,7 @@ def set_featured(handle: str, body: FeaturedIn, actor: dict = Depends(auth_admin
         if not b: raise HTTPException(404, "unknown bot")
         now = time.time()
         if body.days is not None:
-            base = b["featured_until"] if is_featured(b["featured_until"], now) else now
-            until = base + body.days * 86400
+            until = featured_extension(b["featured_until"], body.days, now)
         else:
             until = body.featured_until or None
         c.execute("UPDATE bots SET featured_until=? WHERE id=?", (until, b["id"])); c.commit()

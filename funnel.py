@@ -22,6 +22,15 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 EVENTS = ("reports_view", "checkout_start", "purchase_complete", "pro_waitlist_signup")
 SOURCES = ("card", "lab", "home")
+# Placement Payment Links. Kept out of SOURCES so the career-report summary
+# still pre-seeds only card, lab, and home. clean_src stores these uppercase.
+PLACEMENT_SOURCES = frozenset({
+    "FEATURED_LINK_WEEK",
+    "FEATURED_LINK_MONTH",
+    "AD_LINK_DAY",
+    "AD_LINK_WEEK",
+    "AD_LINK_SECTION",
+})
 WINDOW_DAYS = 30
 _WINDOW_SECONDS = WINDOW_DAYS * 24 * 60 * 60
 
@@ -56,9 +65,13 @@ def is_bot_user_agent(value):
 def clean_src(src):
     if src is None:
         return None
-    text = str(src).strip().lower()
-    if _SRC.match(text):
-        return text
+    text = str(src).strip()
+    lower = text.lower()
+    if _SRC.match(lower):
+        return lower
+    upper = text.upper()
+    if upper in PLACEMENT_SOURCES:
+        return upper
     return None
 
 
@@ -114,6 +127,7 @@ def record_event(event, src=None, report_id=None):
 
     Skips obvious bots. purchase_complete is ignored when that report id
     already has one, so webhook and success-page fulfillment count once.
+    A placement purchase has no report id; its src is the Payment Link tier.
     """
     if is_bot_user_agent(_ua.get()):
         return False
@@ -121,7 +135,7 @@ def record_event(event, src=None, report_id=None):
         return False
     src = clean_src(src)
     report_id = clean_report_id(report_id)
-    if event == "purchase_complete" and not report_id:
+    if event == "purchase_complete" and not report_id and src not in PLACEMENT_SOURCES:
         return False
     try:
         return _insert(event, src, report_id)
