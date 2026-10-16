@@ -20,7 +20,7 @@ from typing import Optional
 from fastapi import Header, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-EVENTS = ("reports_view", "checkout_start", "purchase_complete")
+EVENTS = ("reports_view", "checkout_start", "purchase_complete", "pro_waitlist_signup")
 SOURCES = ("card", "lab", "home")
 WINDOW_DAYS = 30
 _WINDOW_SECONDS = WINDOW_DAYS * 24 * 60 * 60
