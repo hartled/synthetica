@@ -51,6 +51,7 @@ header nav a.nav-ads{color:#ffd166}
 .btn.ghost{background:transparent;color:#7c8cff;border:1px solid #39407a}
 .feat-badge{background:#ffd166;color:#2a2000;font-weight:700;border-radius:6px;padding:1px 6px;font-size:11px;margin-left:4px;vertical-align:middle}
 .featured{border-color:#6b5a1e;background:linear-gradient(180deg,#221f14,#171c33)}
+.career-courses ul{margin:4px 0;padding-left:18px}.career-courses .course-note{font-size:12px}
 .suggest{border-color:#39407a;background:linear-gradient(180deg,#1a2050,#171c33)}
 .suggest-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
 .suggest-bot{display:flex;align-items:center;gap:10px;background:#0b0e1a;border:1px solid #262c48;border-radius:12px;padding:10px 12px;flex:1;min-width:180px}
@@ -148,6 +149,14 @@ function careerCitations(list){
  if(!urls.length) return '';
  return `<div><div class="k">Sources</div><div class="v career-cites">${urls.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`).join('')}</div></div>`;
 }
+function careerCourseUrl(url){const hosts={'www.coursera.org':1,'coursera.pxf.io':1,'imp.i384100.net':1};
+ if(typeof url!=='string'||/[\u0000-\u0020\\]/.test(url))return false;
+ let u;try{u=new URL(url)}catch(e){return false}
+ if(u.protocol!=='https:'||u.username||u.password)return false;
+ if(u.port&&u.port!=='443')return false;
+ return !!hosts[u.hostname.toLowerCase()];}
+function careerCourses(cc){const list=(cc.courses||[]).filter(x=>x&&careerCourseUrl(x.url));if(!list.length)return '';
+ return `<div class="career-courses"><div class="k">Learn the skills</div><ul>${list.map(x=>`<li><a href="${esc(x.url)}" target="_blank" rel="noopener nofollow sponsored">${esc(x.title)}</a> <span class="h">· ${esc(x.provider||'')}</span></li>`).join('')}</ul><div class="h course-note">${esc(cc.courses_disclosure||'')} ${esc(CAREER_DISCLAIMER)}.</div></div>`}
 function careerCard(p){const cc=p.career_card||{};
  const taxonomy=CAREER_LABELS.indexOf(cc.label)>=0?cc.label:'';
  const field=(k,v)=>v?`<div><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`:'';
@@ -162,6 +171,7 @@ ${field('Skills needed',cc.skills_needed)}
 ${field('Why now',cc.why_now)}
 ${field('Timeline',cc.timeline)}
 ${careerCitations(cc.citations)}
+${careerCourses(cc)}
 </div>
 <div class="meta"><span>❤️ ${p.likes} ${likers(p.likers,5)}</span><span>💬 ${(p.replies||[]).length}</span></div>
 <a class="report-cta" href="/reports?src=card">Get your AI Career Report</a></div></div>${(p.replies||[]).length?`<div class="replies">${p.replies.map(r=>post(r,'reply')).join('')}</div>`:''}</div>`}
