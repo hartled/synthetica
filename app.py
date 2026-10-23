@@ -1,4 +1,4 @@
-import asyncio, json, random, sqlite3, time, os, re, unicodedata
+import asyncio, copy, json, random, sqlite3, threading, time, os, re, unicodedata, uuid
 import sim_budget
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
@@ -81,8 +81,13 @@ def _ensure_db_parent():
 
 def db():
     _ensure_db_parent()
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys=ON"); return c
+    # busy_timeout lets a request wait out a prune batch or VACUUM instead of
+    # failing immediately. VACUUM still stalls writers; the process keeps serving.
+    c = sqlite3.connect(DB, timeout=30)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys=ON")
+    c.execute("PRAGMA busy_timeout=30000")
+    return c
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bots(id INTEGER PRIMARY KEY, name TEXT, handle TEXT UNIQUE, persona TEXT, avatar TEXT, simulated INTEGER DEFAULT 0, created REAL);
@@ -2309,11 +2314,17 @@ def _prune_posts_module():
     global _prune_posts_mod
     if _prune_posts_mod is None:
         import importlib.util
-        path = os.path.join(BASE_DIR, "scripts", "prune_posts.py")
-        spec = importlib.util.spec_from_file_location("prune_posts", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _prune_posts_mod = mod
+        import sys
+        loaded = sys.modules.get("prune_posts")
+        if loaded is not None and hasattr(loaded, "preview") and hasattr(loaded, "run_guarded_apply"):
+            _prune_posts_mod = loaded
+        else:
+            path = os.path.join(BASE_DIR, "scripts", "prune_posts.py")
+            spec = importlib.util.spec_from_file_location("prune_posts", path)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["prune_posts"] = mod
+            spec.loader.exec_module(mod)
+            _prune_posts_mod = mod
     return _prune_posts_mod
 
 def _prune_preview():
@@ -2336,6 +2347,169 @@ async def admin_prune_preview(actor: dict = Depends(auth_admin)):
     except sqlite3.OperationalError as exc:
         print("prune preview failed:", exc, flush=True)
         raise HTTPException(500, "prune preview failed")
+
+class PruneApplyIn(BaseModel):
+    expected_delete: int = Field(..., ge=0)
+    expected_protected: int = Field(..., ge=0)
+    tolerance_pct: float = Field(3, ge=0)
+    vacuum: bool = True
+
+_prune_state_lock = threading.Lock()
+_prune_running = False
+_prune_job = None
+
+def _prune_job_view(job):
+    end = job["finished_at"] if job["finished_at"] is not None else time.time()
+    elapsed = round(end - job["started_at"], 3) if job["started_at"] is not None else None
+    return {
+        "job_id": job["id"],
+        "status": job["status"],
+        "step": job["step"],
+        "actor": job["actor"],
+        "started_at": job["started_at"],
+        "finished_at": job["finished_at"],
+        "elapsed_seconds": elapsed,
+        "timings": copy.deepcopy(job["timings"]),
+        "error": job["error"],
+        "result": copy.deepcopy(job["result"]),
+        "request": copy.deepcopy(job["request"]),
+    }
+
+def _prune_mark_step(job, name):
+    now = time.time()
+    with _prune_state_lock:
+        current = job["step"]
+        timing = job["timings"].get(current)
+        if timing and timing.get("finished_at") is None and current != name:
+            timing["finished_at"] = now
+            timing["seconds"] = round(now - timing["started_at"], 3)
+        job["step"] = name
+        job["timings"].setdefault(name, {"started_at": now, "finished_at": None, "seconds": None})
+
+def _prune_job_thread(job, db_path):
+    global _prune_running
+    body = job["request"]
+    try:
+        print(f"prune job {job['id']}: start actor={job['actor']}", flush=True)
+        result = _prune_posts_module().run_guarded_apply(
+            db_path,
+            expected_delete=body["expected_delete"],
+            expected_protected=body["expected_protected"],
+            tolerance_pct=body["tolerance_pct"],
+            vacuum=body["vacuum"],
+            on_step=lambda name: _prune_mark_step(job, name),
+        )
+        with _prune_state_lock:
+            job["status"] = result.get("status") or "failed"
+            job["result"] = result
+            job["error"] = result.get("error")
+            if result.get("step"):
+                job["step"] = result["step"]
+        print(f"prune job {job['id']}: {job['status']}", flush=True)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        with _prune_state_lock:
+            job["status"] = "failed"
+            job["error"] = str(exc)
+    finally:
+        finished = time.time()
+        with _prune_state_lock:
+            timing = job["timings"].get(job["step"])
+            if timing and timing.get("finished_at") is None:
+                timing["finished_at"] = finished
+                timing["seconds"] = round(finished - timing["started_at"], 3)
+            job["finished_at"] = finished
+            status = job["status"]
+            error = job.get("error")
+            job_id = job["id"]
+            actor = job["actor"]
+            _prune_running = False
+        detail = status if not error else f"{status}: {error}"
+        try:
+            audit_admin(
+                actor,
+                "prune_apply_finish",
+                target=job_id,
+                ok=1 if status == "completed" else 0,
+                detail=detail[:500],
+            )
+        except Exception as exc:
+            print("prune apply audit failed:", exc, flush=True)
+
+def _start_prune_job(actor_slug, body: PruneApplyIn, db_path):
+    """Start the single background prune. 409 when one is already running."""
+    global _prune_running, _prune_job
+    request = {
+        "expected_delete": body.expected_delete,
+        "expected_protected": body.expected_protected,
+        "tolerance_pct": body.tolerance_pct,
+        "vacuum": body.vacuum,
+    }
+    with _prune_state_lock:
+        if _prune_running:
+            busy = True
+            job = None
+        else:
+            busy = False
+            now = time.time()
+            job = {
+                "id": uuid.uuid4().hex,
+                "status": "running",
+                "step": "starting",
+                "actor": actor_slug,
+                "started_at": now,
+                "finished_at": None,
+                "timings": {"starting": {"started_at": now, "finished_at": None, "seconds": None}},
+                "error": None,
+                "result": None,
+                "request": request,
+            }
+            _prune_job = job
+            _prune_running = True
+    if busy:
+        audit_admin(actor_slug, "prune_apply", ok=0, detail="already running")
+        raise HTTPException(409, "a prune job is already running")
+    audit_admin(actor_slug, "prune_apply", target=job["id"], detail=json.dumps(request))
+    thread = threading.Thread(
+        target=_prune_job_thread,
+        args=(job, db_path),
+        name="prune-apply",
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception:
+        with _prune_state_lock:
+            job["status"] = "failed"
+            job["error"] = "could not start background job"
+            job["finished_at"] = time.time()
+            _prune_running = False
+        raise HTTPException(500, "could not start prune job")
+    return job
+
+@app.post("/api/admin/prune/apply", tags=["admin"],
+          summary="Start a background prune of simulated posts (admin)")
+def admin_prune_apply(body: PruneApplyIn, actor: dict = Depends(auth_admin)):
+    """Run scripts/prune_posts.py apply on DATABASE_PATH in a background thread.
+
+    Returns a job id immediately. Only one job runs at a time. The job checks
+    free disk (2.5x the database file), writes a sqlite backup under
+    /data/backups when the database is /data/botsocial.db, re-checks the dry
+    run against expected_delete and expected_protected, then deletes. That
+    backup directory is not mounted or routed, so it is not served.
+    """
+    job = _start_prune_job(actor["slug"], body, DB)
+    return {"job_id": job["id"], "status": job["status"]}
+
+@app.get("/api/admin/prune/job", tags=["admin"],
+         summary="Status of the current or last prune job (admin)")
+def admin_prune_job(actor: dict = Depends(auth_admin)):
+    del actor
+    with _prune_state_lock:
+        if _prune_job is None:
+            raise HTTPException(404, "no prune job")
+        return _prune_job_view(_prune_job)
 
 def _set_post_hidden(pid, hidden):
     c = db()
