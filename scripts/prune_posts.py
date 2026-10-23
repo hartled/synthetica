@@ -34,17 +34,21 @@ Usage:
   python scripts/prune_posts.py --db /data/botsocial.db --apply --vacuum
   python scripts/prune_posts.py --min-age-days 14
 
-POST /api/admin/prune/apply calls run_guarded_apply(). That checks free disk,
+POST /api/admin/prune/apply starts scripts/prune_job.py in a separate
+process. That process calls run_guarded_apply(), which checks free disk,
 writes a sqlite backup beside the database (<db dir>/backups, which is
 /data/backups in production), re-checks this dry run, then calls execute().
+Job state is JSON under <db dir>/prune_jobs (/data/prune_jobs in production).
 The CLI still defaults to a dry run.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -63,6 +67,15 @@ VACUUM_HEADROOM = 64 * 1024 * 1024
 # Backup copy plus a VACUUM rewrite. Free space must be at least this times
 # the current database file size before run_guarded_apply touches the file.
 DISK_FREE_MULTIPLE = 2.5
+# sqlite3 backup() copies this many pages, then sleeps so other connections
+# and the OS can breathe. 1024 pages is 4MB at the default page size. Never
+# read the database file into a Python bytes object.
+BACKUP_PAGES = 1024
+BACKUP_SLEEP = 0.05
+# A job file with no pid yet is still starting. After this, a missing pid is dead.
+SPAWN_GRACE_SECONDS = 15
+BACKUP_NAME_RE = re.compile(r"^botsocial-\d{8}T\d{6}Z(?:-\d+)?\.db(?:\.partial)?$")
+JOB_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 
 
 def _table(conn, name) -> bool:
@@ -336,8 +349,33 @@ def _delete_chunk(conn, ids):
     conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", ids)
 
 
-def delete_posts(conn, ids, *, batch_size=BATCH) -> int:
-    """Delete ids child-first, one transaction per batch. Returns rows removed."""
+def delete_posts(conn, ids, *, batch_size=None, atomic=False) -> int:
+    """Delete ids child-first. Returns how many ids were submitted for delete.
+
+    atomic=False commits each batch on its own. A batch that already committed
+    is gone, and repeating the call deletes whatever ids remain (a missing id
+    is a no-op). atomic=True puts every batch in one transaction, so a crash
+    rolls the whole delete back and a rerun deletes the same set.
+    """
+    if batch_size is None:
+        batch_size = BATCH
+    if atomic:
+        conn.execute("BEGIN")
+    try:
+        deleted = _delete_ids(conn, ids, batch_size, commit_batches=not atomic)
+        if atomic:
+            conn.execute("COMMIT")
+    except Exception:
+        if atomic:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+        raise
+    return deleted
+
+
+def _delete_ids(conn, ids, batch_size, *, commit_batches) -> int:
     remaining = set(ids)
     deleted = 0
     while remaining:
@@ -354,12 +392,18 @@ def delete_posts(conn, ids, *, batch_size=BATCH) -> int:
         if not leaves:
             break
         for chunk in _chunks(leaves, batch_size):
-            conn.execute("BEGIN")
+            if commit_batches:
+                conn.execute("BEGIN")
             try:
                 _delete_chunk(conn, chunk)
-                conn.execute("COMMIT")
+                if commit_batches:
+                    conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                if commit_batches:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.OperationalError:
+                        pass
                 raise
             deleted += len(chunk)
         remaining.difference_update(leaves)
@@ -577,9 +621,9 @@ def _write_backup(src_path, dest_path):
     try:
         src.execute("PRAGMA busy_timeout=30000")
         dest.execute("PRAGMA busy_timeout=30000")
-        # Chunked copy releases the lock between steps so other connections
-        # can keep serving. sleep runs only when pages remain.
-        src.backup(dest, pages=128, sleep=0.02)
+        # Chunked copy. sleep runs only while pages remain, so the server can
+        # keep using the file. This does not read the source into memory.
+        src.backup(dest, pages=BACKUP_PAGES, sleep=BACKUP_SLEEP)
         # backup() returns only after dest is a complete snapshot. Count dest
         # first so a post that lands on src a moment later cannot look like a
         # short copy. A mismatch aborts before any delete.
@@ -698,6 +742,7 @@ def run_guarded_apply(
     now=None,
     min_age_days=14,
     on_step=None,
+    on_update=None,
 ) -> dict:
     """Backup, re-check the dry run, then delete with the existing prune rules.
 
@@ -706,12 +751,32 @@ def run_guarded_apply(
     with aborted_mismatch (backup kept, nothing deleted) when the recomputed
     would-delete total or protected total is outside tolerance_pct of the
     caller's expected counts. Selection and deletion go through preview() and
-    execute(); this function does not choose rows itself.
+    execute(); this function does not choose rows itself. The delete is one
+    transaction, so a crash before commit leaves every row in place.
     """
     timings = {}
     current = {"name": None}
     partial = {"path": None}
     kept_backup = {"path": None, "bytes": None, "posts": None}
+    known = {"actual_delete": None, "actual_protected": None, "removed": None}
+
+    def snapshot():
+        return {
+            "step": current["name"],
+            "timings": {key: dict(value) for key, value in timings.items()},
+            "backup_path": kept_backup["path"] or partial["path"],
+            "backup_bytes": kept_backup["bytes"],
+            "backup_posts": kept_backup["posts"],
+            "expected_delete": expected_delete if isinstance(expected_delete, int) else None,
+            "expected_protected": expected_protected if isinstance(expected_protected, int) else None,
+            "actual_delete": known["actual_delete"],
+            "actual_protected": known["actual_protected"],
+            "removed": known["removed"],
+        }
+
+    def publish():
+        if on_update:
+            on_update(snapshot())
 
     def step(name):
         stamp = time.time()
@@ -723,6 +788,7 @@ def run_guarded_apply(
         timings[name] = {"started_at": stamp, "finished_at": None, "seconds": None}
         if on_step:
             on_step(name)
+        publish()
 
     def finish():
         stamp = time.time()
@@ -818,6 +884,9 @@ def run_guarded_apply(
             )
 
         step("backup")
+        # A previous job may have died while the sqlite copy was still a
+        # .partial file. Drop those before allocating a new name.
+        clear_incomplete_backups(path)
         before = _overview(path)
         dest = _new_backup_path(path)
         partial_path = dest + ".partial"
@@ -859,6 +928,9 @@ def run_guarded_apply(
         plan = preview(path, now=now, min_age_days=min_age_days)
         actual_delete = int(plan["would_delete"]["total"])
         actual_protected = int(plan["protected"]["total"])
+        known["actual_delete"] = actual_delete
+        known["actual_protected"] = actual_protected
+        publish()
         counts_match = within_tolerance(actual_delete, expected_delete, tolerance_pct) and within_tolerance(
             actual_protected, expected_protected, tolerance_pct
         )
@@ -891,7 +963,10 @@ def run_guarded_apply(
             vacuum=False,
             now=now,
             min_age_days=min_age_days,
+            atomic_delete=True,
         )
+        known["removed"] = int(report["removed"])
+        publish()
         search_mode = _sync_search_file(path)
 
         vacuumed = False
@@ -930,7 +1005,9 @@ def run_guarded_apply(
         return fail("failed", str(exc), **common)
 
 
-def execute(db_path, *, apply=False, vacuum=False, now=None, min_age_days=14, batch_size=BATCH) -> dict:
+def execute(db_path, *, apply=False, vacuum=False, now=None, min_age_days=14, batch_size=None, atomic_delete=False) -> dict:
+    if batch_size is None:
+        batch_size = BATCH
     path = os.path.abspath(db_path)
     conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -944,7 +1021,9 @@ def execute(db_path, *, apply=False, vacuum=False, now=None, min_age_days=14, ba
         vacuumed = False
         vacuum_note = "not requested"
         if apply:
-            removed = delete_posts(conn, plan["remove_ids"], batch_size=batch_size)
+            removed = delete_posts(
+                conn, plan["remove_ids"], batch_size=batch_size, atomic=atomic_delete,
+            )
             sim_budget.clear_cache(path)
             if vacuum:
                 vacuumed, vacuum_note = _maybe_vacuum(conn, path, overview["size_bytes"])
@@ -968,6 +1047,217 @@ def execute(db_path, *, apply=False, vacuum=False, now=None, min_age_days=14, ba
         return report
     finally:
         conn.close()
+
+
+def prune_jobs_directory(db_path) -> str:
+    """/data/botsocial.db -> /data/prune_jobs. Same directory rule as backups."""
+    parent = os.path.dirname(os.path.abspath(db_path)) or "."
+    return os.path.join(parent, "prune_jobs")
+
+
+def job_file(db_path, job_id) -> str:
+    if not isinstance(job_id, str) or not JOB_ID_RE.fullmatch(job_id):
+        raise ValueError("invalid job id")
+    return os.path.join(prune_jobs_directory(db_path), job_id + ".json")
+
+
+def write_job(path, data) -> None:
+    """Atomically replace a job file so a reader never sees a partial JSON object."""
+    folder = os.path.dirname(os.path.abspath(path))
+    os.makedirs(folder, exist_ok=True)
+    try:
+        os.chmod(folder, 0o700)
+    except OSError:
+        pass
+    tmp = path + ".tmp"
+    payload = json.dumps(data, separators=(",", ":"), sort_keys=True, default=str)
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def read_job(path) -> dict:
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("job file is not an object")
+    return data
+
+
+def pid_alive(pid) -> bool:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def job_process_live(job, now=None) -> bool:
+    """True when a running job's process is still alive, or it is still spawning."""
+    if not isinstance(job, dict) or job.get("status") != "running":
+        return False
+    if pid_alive(job.get("pid")):
+        return True
+    if job.get("pid"):
+        return False
+    started = job.get("started_at")
+    now = time.time() if now is None else now
+    return isinstance(started, (int, float)) and (now - started) < SPAWN_GRACE_SECONDS
+
+
+def iter_jobs(db_path):
+    folder = prune_jobs_directory(db_path)
+    if not os.path.isdir(folder):
+        return
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".json"):
+            continue
+        job_id = name[:-5]
+        if not JOB_ID_RE.fullmatch(job_id):
+            continue
+        path = os.path.join(folder, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        try:
+            job = read_job(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(job, dict):
+            job.setdefault("id", job_id)
+            yield path, job
+
+
+def interrupt_message(job) -> str:
+    step = job.get("step") if isinstance(job, dict) else None
+    # The delete is one transaction. Dying during it rolls back, same as dying
+    # after the backup and before delete. Later steps may already have committed.
+    if step in (None, "starting", "disk_check", "backup", "verify_backup", "preview", "delete"):
+        return "interrupted: process died before the delete committed; database left unchanged"
+    return "interrupted: process died after the delete may have committed; database was not modified further"
+
+
+def reconcile_jobs(db_path, now=None) -> list:
+    """Mark running jobs whose pid is dead as interrupted.
+
+    Does not open the database. An interrupted job is not resumed and no rows
+    are deleted from here. A delete that had not committed rolls back when
+    SQLite next opens the file.
+    """
+    now = time.time() if now is None else now
+    changed = []
+    for path, job in list(iter_jobs(db_path)):
+        if job.get("status") != "running" or job_process_live(job, now=now):
+            continue
+        job["status"] = "interrupted"
+        job["finished_at"] = now
+        if not job.get("error"):
+            job["error"] = interrupt_message(job)
+        write_job(path, job)
+        changed.append(job)
+    return changed
+
+
+def running_job(db_path):
+    for path, job in iter_jobs(db_path):
+        if job.get("status") == "running" and job_process_live(job):
+            return path, job
+    return None
+
+
+def latest_job(db_path):
+    """The live running job, otherwise the one with the newest started_at."""
+    chosen = None
+    for path, job in iter_jobs(db_path):
+        if job.get("status") == "running" and job_process_live(job):
+            return path, job
+        started = job.get("started_at") or 0
+        if chosen is None or started >= (chosen[1].get("started_at") or 0):
+            chosen = (path, job)
+    return chosen
+
+
+def clear_incomplete_backups(db_path) -> list:
+    """Delete .partial backup files left by an interrupted copy. Keep finished backups."""
+    folder = backup_directory(db_path)
+    if not os.path.isdir(folder):
+        return []
+    folder_real = os.path.realpath(folder)
+    db_real = os.path.realpath(db_path)
+    removed = []
+    for name in os.listdir(folder):
+        if not name.endswith(".partial") or not BACKUP_NAME_RE.fullmatch(name):
+            continue
+        path = os.path.join(folder, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        real = os.path.realpath(path)
+        if os.path.dirname(real) != folder_real or real == db_real:
+            continue
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        removed.append(name)
+    return removed
+
+
+def list_backups(db_path) -> list:
+    """Regular files in the backup directory, with sizes. Never the live database."""
+    folder = backup_directory(db_path)
+    if not os.path.isdir(folder):
+        return []
+    folder_real = os.path.realpath(folder)
+    db_real = os.path.realpath(db_path)
+    rows = []
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        real = os.path.realpath(path)
+        if os.path.dirname(real) != folder_real or real == db_real:
+            continue
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        rows.append({"name": name, "bytes": int(st.st_size), "modified": st.st_mtime})
+    return rows
+
+
+def resolve_backup_name(db_path, name) -> str:
+    """Absolute path of one backup file, or ValueError if name is not a backup.
+
+    The live database, paths outside the backup directory, and symlinks are refused.
+    """
+    if not isinstance(name, str) or not name or name != os.path.basename(name):
+        raise ValueError("invalid backup name")
+    if name in (".", "..") or any(ch in name for ch in "/\\\x00"):
+        raise ValueError("invalid backup name")
+    if not BACKUP_NAME_RE.fullmatch(name):
+        raise ValueError("invalid backup name")
+    folder = os.path.realpath(backup_directory(db_path))
+    candidate = os.path.join(folder, name)
+    if os.path.islink(candidate):
+        raise ValueError("refusing to delete that file")
+    real = os.path.realpath(candidate)
+    if os.path.dirname(real) != folder:
+        raise ValueError("invalid backup name")
+    if real == os.path.realpath(db_path):
+        raise ValueError("refusing to touch the database")
+    return real
 
 
 def format_report(report) -> str:

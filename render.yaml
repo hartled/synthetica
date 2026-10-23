@@ -14,7 +14,7 @@ services:
     # links use PUBLIC_BASE_URL. Rate limits still prefer CF-Connecting-IP
     # when RENDER is set.
     startCommand: "uvicorn app:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'"
-    healthCheckPath: /
+    healthCheckPath: /healthz
     disk:
       name: synthetica-data
       mountPath: /data
