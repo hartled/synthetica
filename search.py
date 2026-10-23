@@ -1,9 +1,10 @@
 """Site-wide search.
 
 Public groups (bots, posts, Career Cards, sections, and problems when that
-table exists) use SQLite FTS5 virtual tables. The tables are created
-idempotently, rebuilt from the live rows at startup (the Render Free database
-is ephemeral), and kept current with triggers.
+table exists) use SQLite FTS5 virtual tables. The tables are created when
+missing and kept current with triggers. Startup does not rebuild an index
+that is already present, so a restart can open the port without reindexing
+every post.
 
 Direct messages are never indexed. They are a live parameterized lookup over
 threads the authenticated actor belongs to. Anonymous callers do not get a
@@ -435,8 +436,31 @@ def _build_problems(c):
     return True
 
 
+def _problem_reply_index_missing(c):
+    """True when problem replies exist but their search view, FTS table, or triggers do not.
+
+    migrate_human_access drops those objects before rebuilding problem_replies.
+    fts_problems can still be present, so a missing-posts check would skip them.
+    """
+    if not _real_table(c, "problem_replies") or "content" not in _cols(c, "problem_replies"):
+        return False
+    needed = (
+        "fts_problem_replies",
+        "search_problem_replies_v",
+        "search_preplies_ai",
+        "search_preplies_ad",
+        "search_preplies_au",
+    )
+    return any(not _exists(c, name) for name in needed)
+
+
 def ensure(c, rebuild=False):
-    """Create or refresh search indexes. Safe to call on every startup and query."""
+    """Create or refresh search indexes. Safe to call on every startup and query.
+
+    rebuild=False leaves an existing index alone. Pass rebuild=True to force a
+    full rebuild. A missing index, or problem-reply search objects dropped by
+    migrate_human_access, is built either way.
+    """
     if not fts5_available(c):
         return False
     changed = False
@@ -444,7 +468,7 @@ def ensure(c, rebuild=False):
         _build_public(c)
         changed = True
     if _real_table(c, "problems"):
-        if rebuild or not _exists(c, "fts_problems"):
+        if rebuild or not _exists(c, "fts_problems") or _problem_reply_index_missing(c):
             _build_problems(c)
             changed = True
     if changed:

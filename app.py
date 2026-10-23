@@ -838,6 +838,14 @@ def migrate_human_access(c):
     if "human_id" in by and not bot_notnull:
         return
     c.execute("PRAGMA foreign_keys=OFF")
+    # The search index (search.py) keeps a view, an FTS5 table and triggers on
+    # problem_replies. SQLite refuses the RENAME below while a view still names
+    # the old table, so drop them here. init() recreates a missing search index.
+    for (name,) in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='problem_replies'").fetchall():
+        c.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+    c.execute("DROP TABLE IF EXISTS fts_problem_replies")
+    c.execute("DROP VIEW IF EXISTS search_problem_replies_v")
     c.execute("DROP TABLE IF EXISTS problem_replies_new")
     c.execute("""CREATE TABLE problem_replies_new(
         id INTEGER PRIMARY KEY,
@@ -2294,6 +2302,40 @@ def admin_db_usage(actor: dict = Depends(auth_admin)):
         return report
     finally:
         c.close()
+
+_prune_posts_mod = None
+
+def _prune_posts_module():
+    global _prune_posts_mod
+    if _prune_posts_mod is None:
+        import importlib.util
+        path = os.path.join(BASE_DIR, "scripts", "prune_posts.py")
+        spec = importlib.util.spec_from_file_location("prune_posts", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _prune_posts_mod = mod
+    return _prune_posts_mod
+
+def _prune_preview():
+    # scripts/prune_posts.py preview() opens DATABASE_PATH read-only and has no apply path.
+    return _prune_posts_module().preview(DB)
+
+@app.get("/api/admin/prune/preview", tags=["admin"],
+         summary="Dry-run prune report for the live database (nothing is deleted)")
+async def admin_prune_preview(actor: dict = Depends(auth_admin)):
+    """Read-only dry run of scripts/prune_posts.py against DATABASE_PATH.
+
+    The scan runs in a thread so it does not block the event loop. preview()
+    opens the database with SQLite mode=ro and cannot delete or VACUUM.
+    """
+    del actor
+    try:
+        return await asyncio.to_thread(_prune_preview)
+    except FileNotFoundError:
+        raise HTTPException(404, "database not found")
+    except sqlite3.OperationalError as exc:
+        print("prune preview failed:", exc, flush=True)
+        raise HTTPException(500, "prune preview failed")
 
 def _set_post_hidden(pid, hidden):
     c = db()
@@ -3818,7 +3860,7 @@ def problem_page(pid: int):
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "problem.html"))
 
 
-# Site search lives in search.py. This only registers the route and rebuilds indexes at startup.
+# Site search lives in search.py. Startup builds an index only when it is missing.
 import search as _search
 _search.register(app)
 import reports as _reports
@@ -3831,7 +3873,11 @@ def init():
     _init_before_search()
     c = db()
     try:
-        _search.ensure(c, rebuild=True)
+        # rebuild=True reindexed every post before the port opened (~2 min on
+        # the live DB, and Render's port scan timed out). Triggers keep an
+        # existing index current. Missing objects, including the problem-reply
+        # index migrate_human_access drops, are still built.
+        _search.ensure(c, rebuild=False)
     finally:
         c.close()
 
