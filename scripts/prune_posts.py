@@ -76,47 +76,67 @@ def _ids(conn, sql, params=()):
     return {row[0] for row in conn.execute(sql, params) if row[0] is not None}
 
 
-def protected_post_ids(conn) -> set:
-    """Posts the prune is not allowed to select."""
-    found = set()
+# A post can match more than one reason. `protected_post_ids` is the union.
+_PROTECT_CATEGORIES = (
+    "non_simulated",
+    "featured",
+    "sponsorship",
+    "ad_post",
+    "ad_placement",
+    "human_reply_parent",
+    "problem_career_card",
+)
+
+
+def _protected_sets(conn) -> dict:
+    """Same rows as protected_post_ids, split by why they are kept."""
+    groups = {name: set() for name in _PROTECT_CATEGORIES}
     if not _table(conn, "posts"):
-        return found
+        return groups
     if _table(conn, "bots"):
-        found.update(_ids(
+        groups["non_simulated"].update(_ids(
             conn,
             """SELECT p.id FROM posts p JOIN bots b ON b.id = p.bot_id
                WHERE COALESCE(b.simulated, 0) != 1""",
         ))
         if _column(conn, "bots", "featured_until"):
-            found.update(_ids(
+            groups["featured"].update(_ids(
                 conn,
                 """SELECT p.id FROM posts p JOIN bots b ON b.id = p.bot_id
                    WHERE b.featured_until IS NOT NULL""",
             ))
         if _table(conn, "sponsorships"):
-            found.update(_ids(
+            groups["sponsorship"].update(_ids(
                 conn,
                 """SELECT p.id FROM posts p
                    JOIN bots b ON b.id = p.bot_id
                    JOIN sponsorships s ON s.handle = b.handle""",
             ))
     if _column(conn, "posts", "ad_id"):
-        found.update(_ids(conn, "SELECT id FROM posts WHERE ad_id IS NOT NULL"))
+        groups["ad_post"].update(_ids(conn, "SELECT id FROM posts WHERE ad_id IS NOT NULL"))
     if _table(conn, "ads") and _column(conn, "ads", "post_id"):
-        found.update(_ids(conn, "SELECT post_id FROM ads WHERE post_id IS NOT NULL"))
+        groups["ad_placement"].update(_ids(conn, "SELECT post_id FROM ads WHERE post_id IS NOT NULL"))
     if _table(conn, "bots"):
-        found.update(_ids(
+        groups["human_reply_parent"].update(_ids(
             conn,
             """SELECT DISTINCT r.parent_id FROM posts r
                JOIN bots b ON b.id = r.bot_id
                WHERE r.parent_id IS NOT NULL AND COALESCE(b.simulated, 0) != 1""",
         ))
     if _table(conn, "problems") and _table(conn, "career_cards") and _column(conn, "problems", "career_card_id"):
-        found.update(_ids(
+        groups["problem_career_card"].update(_ids(
             conn,
             """SELECT cc.post_id FROM career_cards cc
                JOIN problems p ON p.career_card_id = cc.id""",
         ))
+    return groups
+
+
+def protected_post_ids(conn) -> set:
+    """Posts the prune is not allowed to select."""
+    found = set()
+    for ids in _protected_sets(conn).values():
+        found.update(ids)
     return found
 
 
@@ -266,7 +286,10 @@ def _drop_blocked_parents(conn, remove):
 
 def select_removals(conn, *, now=None, min_age_days=14) -> dict:
     now = time.time() if now is None else now
-    protected = protected_post_ids(conn)
+    groups = _protected_sets(conn)
+    protected = set()
+    for ids in groups.values():
+        protected.update(ids)
     remove = {}
     if _table(conn, "posts"):
         posts = _load_posts(conn)
@@ -291,6 +314,7 @@ def select_removals(conn, *, now=None, min_age_days=14) -> dict:
         "by_reason": counts,
         "sample": sample,
         "protected_posts": len(protected),
+        "protected_by_category": {name: len(groups[name]) for name in _PROTECT_CATEGORIES},
     }
 
 
@@ -343,6 +367,97 @@ def _maybe_vacuum(conn, path, size_bytes):
         )
     conn.execute("VACUUM")
     return True, "VACUUM completed"
+
+
+def _count_matching(conn, table, column, ids) -> int:
+    if not ids or not _table(conn, table) or not _column(conn, table, column):
+        return 0
+    total = 0
+    for chunk in _chunks(ids, BATCH):
+        marks = ",".join("?" * len(chunk))
+        total += conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({marks})",
+            chunk,
+        ).fetchone()[0]
+    return int(total)
+
+
+def rows_to_delete(conn, remove_ids) -> dict:
+    """Rows delete_posts would remove. Posts, then likes and career cards on them."""
+    ids = list(remove_ids)
+    by_table = {
+        "posts": len(ids) if _table(conn, "posts") else 0,
+        "likes": _count_matching(conn, "likes", "post_id", ids),
+        "career_cards": _count_matching(conn, "career_cards", "post_id", ids),
+    }
+    return {"total": sum(by_table.values()), "by_table": by_table}
+
+
+def _content_bytes(conn, ids=None) -> int:
+    if not _table(conn, "posts"):
+        return 0
+    if ids is None:
+        row = conn.execute("SELECT COALESCE(SUM(LENGTH(content)), 0) FROM posts").fetchone()
+        return int(row[0] or 0)
+    total = 0
+    for chunk in _chunks(ids, BATCH):
+        if not chunk:
+            continue
+        marks = ",".join("?" * len(chunk))
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(LENGTH(content)), 0) FROM posts WHERE id IN ({marks})",
+            chunk,
+        ).fetchone()
+        total += int(row[0] or 0)
+    return total
+
+
+def _estimate_size(size_bytes, all_text, deleted_text) -> int:
+    """File size scaled by the share of post text that would remain after VACUUM."""
+    if size_bytes <= 0 or all_text <= 0 or deleted_text <= 0:
+        return max(0, int(size_bytes))
+    deleted_text = min(int(deleted_text), int(all_text))
+    return int(size_bytes * (all_text - deleted_text) / all_text)
+
+
+def _connect_readonly(db_path):
+    path = os.path.abspath(db_path)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    # mode=ro refuses writes. query_only is a second guard if the URI is ignored.
+    uri = Path(path).as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn, path
+
+
+def preview(db_path, *, now=None, min_age_days=14) -> dict:
+    """Dry run against a read-only connection. Never deletes, writes, or VACUUMs.
+
+    There is no apply switch on this function.
+    """
+    conn, path = _connect_readonly(db_path)
+    try:
+        overview = sim_budget.sqlite_overview(conn, path)
+        plan = select_removals(conn, now=now, min_age_days=min_age_days)
+        would_delete = rows_to_delete(conn, plan["remove_ids"])
+        all_text = _content_bytes(conn)
+        deleted_text = _content_bytes(conn, plan["remove_ids"])
+        size = int(overview["size_bytes"])
+        return {
+            "mode": "dry-run",
+            "size_bytes": size,
+            "estimated_size_bytes": _estimate_size(size, all_text, deleted_text),
+            "would_delete": would_delete,
+            "protected": {
+                "total": plan["protected_posts"],
+                "by_category": plan["protected_by_category"],
+            },
+        }
+    finally:
+        conn.close()
 
 
 def execute(db_path, *, apply=False, vacuum=False, now=None, min_age_days=14, batch_size=BATCH) -> dict:
