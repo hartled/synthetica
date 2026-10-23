@@ -1,4 +1,4 @@
-import asyncio, copy, json, random, sqlite3, threading, time, os, re, unicodedata, uuid
+import asyncio, copy, json, random, sqlite3, subprocess, sys, threading, time, os, re, unicodedata, uuid
 import sim_budget
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
@@ -434,11 +434,67 @@ async def loop():
                 print("sim sleep error", e)
         await asyncio.sleep(delay)
 
+def _background_startup() -> bool:
+    """Open the port before init() on Render.
+
+    init() replays migrations, seed lookups, and index builds, and the
+    lifespan used to run twelve simulator steps before the socket listened.
+    On the production database those seed probes walked posts (no index on
+    parent_id) for over a minute, so the health check never saw an open port.
+    Render sets RENDER=true. Tests leave it unset and still finish init first.
+    """
+    return _env_flag("RENDER") and not _explicit_dev()
+
+def _warmup_sim_steps():
+    for _ in range(12):
+        try:
+            step()
+        except Exception as exc:
+            print("startup step error", exc, flush=True)
+
 @asynccontextmanager
 async def lifespan(app):
-    init()
-    for _ in range(12): step()
-    t = asyncio.create_task(loop()); yield; t.cancel()
+    try:
+        _reconcile_prune_jobs()
+    except Exception as exc:
+        print("prune reconcile failed:", exc, flush=True)
+    sim = {"task": None}
+
+    async def boot():
+        try:
+            await asyncio.to_thread(init)
+            await asyncio.to_thread(_warmup_sim_steps)
+        except Exception as exc:
+            print("startup init failed:", exc, flush=True)
+            raise
+        sim["task"] = asyncio.create_task(loop())
+
+    if _background_startup():
+        # Yield first so /healthz can answer while init() catches up.
+        print("startup: opening the port before init", flush=True)
+        boot_task = asyncio.create_task(boot())
+        try:
+            yield
+        finally:
+            boot_task.cancel()
+            task = sim.get("task")
+            if task is not None:
+                task.cancel()
+            for pending in (boot_task, task):
+                if pending is None:
+                    continue
+                try:
+                    await pending
+                except (asyncio.CancelledError, Exception):
+                    pass
+        return
+    await boot()
+    try:
+        yield
+    finally:
+        task = sim.get("task")
+        if task is not None:
+            task.cancel()
 
 import hashlib, hmac, secrets
 import ipaddress
@@ -685,16 +741,23 @@ def seed_career_cards(c):
         insert_career_card(c, b["id"], title, what, who, skills, why, created=now - (n - 1 - i),
                            timeline=timeline, label=label, citations=citations)
 
+def _section_has_posts(c, category) -> bool:
+    """True when this section already has a top-level post. Uses ix_posts_bot."""
+    for (bid,) in c.execute("SELECT id FROM bots WHERE category=?", (category,)):
+        hit = c.execute(
+            """SELECT 1 FROM posts WHERE bot_id=? AND parent_id IS NULL AND ad_id IS NULL
+               AND COALESCE(post_type,'post')='post' LIMIT 1""",
+            (bid,),
+        ).fetchone()
+        if hit:
+            return True
+    return False
+
 def seed_discussion_sections(c):
     """Insert a few grounded posts when a discussion section has none yet."""
     now = time.time()
     for category, posts in SECTION_SEED_POSTS.items():
-        n = c.execute(
-            """SELECT COUNT(*) FROM posts p JOIN bots b ON b.id=p.bot_id
-               WHERE p.parent_id IS NULL AND p.ad_id IS NULL AND b.category=?
-               AND COALESCE(p.post_type,'post')='post'""",
-            (category,)).fetchone()[0]
-        if n:
+        if _section_has_posts(c, category):
             continue
         ordered = list(reversed(posts))
         span = len(ordered)
@@ -1141,11 +1204,15 @@ def seed_deeper_threads(c):
     """Add cite-the-previous-speaker replies on consciousness, quantum, careers, and other."""
     now = time.time()
     for spec in SEED_THREADS:
-        root = c.execute(
-            """SELECT p.id FROM posts p JOIN bots b ON b.id=p.bot_id
-               WHERE b.handle=? AND p.parent_id IS NULL AND p.content LIKE ?
-               ORDER BY p.id LIMIT 1""",
-            (spec["root_handle"], spec["root_like"])).fetchone()
+        bot_row = c.execute("SELECT id FROM bots WHERE handle=?", (spec["root_handle"],)).fetchone()
+        root = None
+        if bot_row:
+            # ix_posts_bot keeps this off a full scan of posts. The old join
+            # plus the parent_id probe below walked the whole table on every boot.
+            root = c.execute(
+                """SELECT id FROM posts WHERE bot_id=? AND parent_id IS NULL AND content LIKE ?
+                   ORDER BY id LIMIT 1""",
+                (bot_row[0], spec["root_like"])).fetchone()
         if not root and spec.get("root_content"):
             bid = _bot_id(c, spec["root_handle"])
             if not bid:
@@ -1160,7 +1227,10 @@ def seed_deeper_threads(c):
         else:
             continue
         marker = spec["replies"][0][1][:48]
-        if c.execute("SELECT 1 FROM posts WHERE parent_id=? AND content LIKE ?", (root_id, marker + "%")).fetchone():
+        if c.execute(
+            "SELECT 1 FROM posts WHERE parent_id=? AND content LIKE ? LIMIT 1",
+            (root_id, marker + "%"),
+        ).fetchone():
             continue
         for i, (handle, content) in enumerate(spec["replies"]):
             _require_len(content, MAX_LEN, handle + " thread reply")
@@ -1249,6 +1319,14 @@ def migrate():
                 c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (cur.lastrowid, o)); c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (o, cur.lastrowid))
         else:
             c.execute("UPDATE bots SET category=? WHERE handle=? AND simulated=1", (p["category"], p["handle"]))
+    # Commit schema before index builds. ix_posts_parent is what stops startup
+    # from scanning every post to see whether seed threads already exist.
+    # On Render, lifespan opens the port before init(), so the first build
+    # does not fail the health check.
+    c.commit()
+    c.execute("CREATE INDEX IF NOT EXISTS ix_posts_bot ON posts(bot_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_posts_parent ON posts(parent_id)")
+    c.commit()
     seed_career_cards(c)
     seed_discussion_sections(c)
     seed_quantum_career_cards(c)
@@ -2354,150 +2432,156 @@ class PruneApplyIn(BaseModel):
     tolerance_pct: float = Field(3, ge=0)
     vacuum: bool = True
 
-_prune_state_lock = threading.Lock()
-_prune_running = False
-_prune_job = None
+_prune_start_lock = threading.Lock()
 
 def _prune_job_view(job):
-    end = job["finished_at"] if job["finished_at"] is not None else time.time()
-    elapsed = round(end - job["started_at"], 3) if job["started_at"] is not None else None
+    end = job.get("finished_at") if job.get("finished_at") is not None else time.time()
+    started = job.get("started_at")
+    elapsed = round(end - started, 3) if isinstance(started, (int, float)) else None
     return {
-        "job_id": job["id"],
-        "status": job["status"],
-        "step": job["step"],
-        "actor": job["actor"],
-        "started_at": job["started_at"],
-        "finished_at": job["finished_at"],
+        "job_id": job.get("id"),
+        "status": job.get("status"),
+        "step": job.get("step"),
+        "actor": job.get("actor"),
+        "pid": job.get("pid"),
+        "started_at": started,
+        "finished_at": job.get("finished_at"),
         "elapsed_seconds": elapsed,
-        "timings": copy.deepcopy(job["timings"]),
-        "error": job["error"],
-        "result": copy.deepcopy(job["result"]),
-        "request": copy.deepcopy(job["request"]),
+        "timings": copy.deepcopy(job.get("timings") or {}),
+        "error": job.get("error"),
+        "result": copy.deepcopy(job.get("result")),
+        "request": copy.deepcopy(job.get("request") or {}),
+        "backup_path": job.get("backup_path"),
+        "numbers": copy.deepcopy(job.get("numbers") or {}),
     }
 
-def _prune_mark_step(job, name):
-    now = time.time()
-    with _prune_state_lock:
-        current = job["step"]
-        timing = job["timings"].get(current)
-        if timing and timing.get("finished_at") is None and current != name:
-            timing["finished_at"] = now
-            timing["seconds"] = round(now - timing["started_at"], 3)
-        job["step"] = name
-        job["timings"].setdefault(name, {"started_at": now, "finished_at": None, "seconds": None})
-
-def _prune_job_thread(job, db_path):
-    global _prune_running
-    body = job["request"]
+def _audit_prune_finish(job):
+    status = job.get("status")
+    error = job.get("error")
+    detail = status if not error else f"{status}: {error}"
     try:
-        print(f"prune job {job['id']}: start actor={job['actor']}", flush=True)
-        result = _prune_posts_module().run_guarded_apply(
-            db_path,
-            expected_delete=body["expected_delete"],
-            expected_protected=body["expected_protected"],
-            tolerance_pct=body["tolerance_pct"],
-            vacuum=body["vacuum"],
-            on_step=lambda name: _prune_mark_step(job, name),
+        audit_admin(
+            job.get("actor") or "?",
+            "prune_apply_finish",
+            target=job.get("id"),
+            ok=1 if status == "completed" else 0,
+            detail=(detail or "")[:500],
         )
-        with _prune_state_lock:
-            job["status"] = result.get("status") or "failed"
-            job["result"] = result
-            job["error"] = result.get("error")
-            if result.get("step"):
-                job["step"] = result["step"]
-        print(f"prune job {job['id']}: {job['status']}", flush=True)
     except Exception as exc:
-        import traceback
-        traceback.print_exc()
-        with _prune_state_lock:
-            job["status"] = "failed"
-            job["error"] = str(exc)
-    finally:
-        finished = time.time()
-        with _prune_state_lock:
-            timing = job["timings"].get(job["step"])
-            if timing and timing.get("finished_at") is None:
-                timing["finished_at"] = finished
-                timing["seconds"] = round(finished - timing["started_at"], 3)
-            job["finished_at"] = finished
-            status = job["status"]
-            error = job.get("error")
-            job_id = job["id"]
-            actor = job["actor"]
-            _prune_running = False
-        detail = status if not error else f"{status}: {error}"
-        try:
-            audit_admin(
-                actor,
-                "prune_apply_finish",
-                target=job_id,
-                ok=1 if status == "completed" else 0,
-                detail=detail[:500],
-            )
-        except Exception as exc:
-            print("prune apply audit failed:", exc, flush=True)
+        print("prune apply audit failed:", exc, flush=True)
+
+def _reconcile_prune_jobs(db_path=None):
+    """Mark running job files whose process is gone. Does not touch post rows."""
+    changed = _prune_posts_module().reconcile_jobs(DB if db_path is None else db_path)
+    for job in changed:
+        _audit_prune_finish(job)
+    return changed
+
+def spawn_prune_process(job_path, db_path):
+    """Start scripts/prune_job.py. The child is a new session so it is not a server thread."""
+    script = os.path.join(BASE_DIR, "scripts", "prune_job.py")
+    return subprocess.Popen(
+        [sys.executable, "-u", script, "--job", job_path, "--db", db_path],
+        cwd=BASE_DIR,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+def _reap_prune_process(proc, job_path):
+    """If the child dies without writing a terminal status, record interrupted.
+
+    This wait does not run the prune. A delete that had not committed is rolled
+    back by SQLite; this function does not open the database to change rows.
+    """
+    try:
+        proc.wait()
+    except Exception as exc:
+        print("prune reap failed:", exc, flush=True)
+        return
+    mod = _prune_posts_module()
+    try:
+        job = mod.read_job(job_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+    if job.get("status") != "running":
+        return
+    job["status"] = "interrupted"
+    job["finished_at"] = time.time()
+    job["pid"] = proc.pid
+    if not job.get("error"):
+        job["error"] = mod.interrupt_message(job)
+    try:
+        mod.write_job(job_path, job)
+    except OSError as exc:
+        print("prune reap write failed:", exc, flush=True)
+        return
+    _audit_prune_finish(job)
 
 def _start_prune_job(actor_slug, body: PruneApplyIn, db_path):
-    """Start the single background prune. 409 when one is already running."""
-    global _prune_running, _prune_job
+    """Start the single prune process. 409 when one is already running."""
+    mod = _prune_posts_module()
     request = {
         "expected_delete": body.expected_delete,
         "expected_protected": body.expected_protected,
         "tolerance_pct": body.tolerance_pct,
         "vacuum": body.vacuum,
     }
-    with _prune_state_lock:
-        if _prune_running:
-            busy = True
-            job = None
-        else:
-            busy = False
-            now = time.time()
-            job = {
-                "id": uuid.uuid4().hex,
-                "status": "running",
-                "step": "starting",
-                "actor": actor_slug,
-                "started_at": now,
-                "finished_at": None,
-                "timings": {"starting": {"started_at": now, "finished_at": None, "seconds": None}},
-                "error": None,
-                "result": None,
-                "request": request,
-            }
-            _prune_job = job
-            _prune_running = True
-    if busy:
-        audit_admin(actor_slug, "prune_apply", ok=0, detail="already running")
-        raise HTTPException(409, "a prune job is already running")
-    audit_admin(actor_slug, "prune_apply", target=job["id"], detail=json.dumps(request))
-    thread = threading.Thread(
-        target=_prune_job_thread,
-        args=(job, db_path),
-        name="prune-apply",
-        daemon=True,
-    )
-    try:
-        thread.start()
-    except Exception:
-        with _prune_state_lock:
+    with _prune_start_lock:
+        _reconcile_prune_jobs(db_path)
+        if mod.running_job(db_path):
+            audit_admin(actor_slug, "prune_apply", ok=0, detail="already running")
+            raise HTTPException(409, "a prune job is already running")
+        now = time.time()
+        job_id = uuid.uuid4().hex
+        job = {
+            "id": job_id,
+            "status": "running",
+            "step": "starting",
+            "actor": actor_slug,
+            "pid": None,
+            "started_at": now,
+            "finished_at": None,
+            "timings": {"starting": {"started_at": now, "finished_at": None, "seconds": None}},
+            "error": None,
+            "result": None,
+            "request": request,
+            "backup_path": None,
+            "numbers": {
+                "expected_delete": body.expected_delete,
+                "expected_protected": body.expected_protected,
+            },
+        }
+        path = mod.job_file(db_path, job_id)
+        mod.write_job(path, job)
+        audit_admin(actor_slug, "prune_apply", target=job_id, detail=json.dumps(request))
+        try:
+            proc = spawn_prune_process(path, db_path)
+        except Exception:
             job["status"] = "failed"
-            job["error"] = "could not start background job"
+            job["error"] = "could not start prune process"
             job["finished_at"] = time.time()
-            _prune_running = False
-        raise HTTPException(500, "could not start prune job")
+            mod.write_job(path, job)
+            raise HTTPException(500, "could not start prune job")
+    threading.Thread(
+        target=_reap_prune_process,
+        args=(proc, path),
+        name="prune-reap",
+        daemon=True,
+    ).start()
     return job
 
 @app.post("/api/admin/prune/apply", tags=["admin"],
           summary="Start a background prune of simulated posts (admin)")
 def admin_prune_apply(body: PruneApplyIn, actor: dict = Depends(auth_admin)):
-    """Run scripts/prune_posts.py apply on DATABASE_PATH in a background thread.
+    """Run scripts/prune_job.py against DATABASE_PATH in a separate process.
 
-    Returns a job id immediately. Only one job runs at a time. The job checks
-    free disk (2.5x the database file), writes a sqlite backup under
-    /data/backups when the database is /data/botsocial.db, re-checks the dry
-    run against expected_delete and expected_protected, then deletes. That
-    backup directory is not mounted or routed, so it is not served.
+    Returns a job id immediately. Only one job runs at a time. State is JSON
+    under /data/prune_jobs when the database is /data/botsocial.db. The job
+    checks free disk (2.5x the database file), writes a sqlite backup under
+    /data/backups, re-checks the dry run against expected_delete and
+    expected_protected, then deletes in one transaction. The backup directory
+    is not a static mount. Admins list and delete backup files below.
     """
     job = _start_prune_job(actor["slug"], body, DB)
     return {"job_id": job["id"], "status": job["status"]}
@@ -2505,11 +2589,36 @@ def admin_prune_apply(body: PruneApplyIn, actor: dict = Depends(auth_admin)):
 @app.get("/api/admin/prune/job", tags=["admin"],
          summary="Status of the current or last prune job (admin)")
 def admin_prune_job(actor: dict = Depends(auth_admin)):
+    """Read /data/prune_jobs. A running job whose pid is dead is interrupted."""
     del actor
-    with _prune_state_lock:
-        if _prune_job is None:
-            raise HTTPException(404, "no prune job")
-        return _prune_job_view(_prune_job)
+    _reconcile_prune_jobs()
+    found = _prune_posts_module().latest_job(DB)
+    if not found:
+        raise HTTPException(404, "no prune job")
+    return _prune_job_view(found[1])
+
+@app.get("/api/admin/backups", tags=["admin"],
+         summary="List database backup files and sizes (admin)")
+def admin_list_backups(actor: dict = Depends(auth_admin)):
+    del actor
+    return {"backups": _prune_posts_module().list_backups(DB)}
+
+@app.delete("/api/admin/backups/{name}", tags=["admin"],
+            summary="Delete one backup file (admin)")
+def admin_delete_backup(name: str, actor: dict = Depends(auth_admin)):
+    """Delete a file in the backup directory. The live database cannot be named."""
+    mod = _prune_posts_module()
+    try:
+        path = mod.resolve_backup_name(DB, name)
+    except ValueError as exc:
+        audit_admin(actor, "backup_delete", target=(name or "")[:200], ok=0, detail=str(exc)[:500])
+        raise HTTPException(400, str(exc))
+    if not os.path.isfile(path):
+        raise HTTPException(404, "backup not found")
+    size = os.path.getsize(path)
+    os.remove(path)
+    audit_admin(actor, "backup_delete", target=name, detail=f"bytes={size}")
+    return {"ok": True, "name": name, "bytes": size}
 
 def _set_post_hidden(pid, hidden):
     c = db()
@@ -2890,6 +2999,13 @@ def partners(): return FileResponse(os.path.join(os.path.dirname(__file__), "sta
 
 @app.get("/og.png", include_in_schema=False)
 def og_png(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/og.png"), media_type="image/png")
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    # Render health checks this path. It must stay free of the database: a
+    # prune or VACUUM can hold SQLite, and this process used to be killed when
+    # the check on / could not finish.
+    return {"ok": True}
 
 @app.get("/", include_in_schema=False)
 def index(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/index.html"))

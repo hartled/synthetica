@@ -5,15 +5,18 @@ the database file or when the recomputed counts drift past tolerance, and it
 writes a sqlite backup that the public site does not serve.
 """
 
+import asyncio
 import importlib.util
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import uuid
 from unittest import mock
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -382,6 +385,258 @@ class GuardedApply(unittest.TestCase):
             conn.close()
 
 
+    def test_backup_copies_in_pages_without_loading_the_file(self):
+        import inspect
+        source = inspect.getsource(prune_posts._write_backup)
+        self.assertIn("pages=BACKUP_PAGES", source)
+        self.assertIn("sleep=BACKUP_SLEEP", source)
+        self.assertNotIn(".read(", source)
+        self.assertEqual(prune_posts.BACKUP_PAGES, 1024)
+        self.assertGreater(prune_posts.BACKUP_SLEEP, 0)
+        self.assertLess(prune_posts.BACKUP_SLEEP, 1)
+
+    def test_partial_backup_is_removed_before_a_new_one(self):
+        self._load()
+        folder = prune_posts.backup_directory(self.path)
+        os.makedirs(folder)
+        partial = os.path.join(folder, "botsocial-20261023T000000Z.db.partial")
+        kept = os.path.join(folder, "botsocial-20261022T000000Z.db")
+        with open(partial, "wb") as handle:
+            handle.write(b"partial-bytes")
+        with open(kept, "wb") as handle:
+            handle.write(b"finished")
+        _preview, result = self._apply(vacuum=False)
+        self.assertEqual(result["status"], "completed", result.get("error"))
+        self.assertFalse(os.path.exists(partial))
+        with open(kept, "rb") as handle:
+            self.assertEqual(handle.read(), b"finished")
+        self.assertTrue(os.path.isfile(result["backup_path"]))
+        self.assertFalse(result["backup_path"].endswith(".partial"))
+
+    def test_atomic_delete_rolls_back_and_a_rerun_finishes(self):
+        self._load()
+        preview = prune_posts.preview(self.path, now=self.now)
+
+        def post_rows():
+            conn = sqlite3.connect(self.path)
+            try:
+                return list(conn.execute("SELECT id, content FROM posts ORDER BY id"))
+            finally:
+                conn.close()
+
+        before = post_rows()
+        calls = {"n": 0}
+        real = prune_posts._delete_chunk
+
+        def flaky(conn, ids):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise RuntimeError("killed mid-delete")
+            return real(conn, ids)
+
+        with mock.patch.object(prune_posts, "BATCH", 1), \
+             mock.patch.object(prune_posts, "_delete_chunk", side_effect=flaky):
+            failed = prune_posts.run_guarded_apply(
+                self.path,
+                expected_delete=preview["would_delete"]["total"],
+                expected_protected=preview["protected"]["total"],
+                vacuum=False,
+                now=self.now,
+            )
+        self.assertEqual(failed["status"], "failed", failed.get("error"))
+        self.assertIn("killed mid-delete", failed["error"])
+        self.assertEqual(post_rows(), before)
+        again = prune_posts.run_guarded_apply(
+            self.path,
+            expected_delete=preview["would_delete"]["total"],
+            expected_protected=preview["protected"]["total"],
+            vacuum=False,
+            now=self.now,
+        )
+        self.assertEqual(again["status"], "completed", again.get("error"))
+        self.assertGreater(again["removed"], 0)
+
+    def test_repeated_delete_of_the_same_ids_is_safe(self):
+        first = self._post(1, _long("gone-a"), self.old)
+        second = self._post(1, _long("gone-b"), self.old)
+        self.conn.commit()
+        conn = sqlite3.connect(self.path)
+        conn.isolation_level = None
+        try:
+            prune_posts.delete_posts(conn, [first, second], batch_size=1, atomic=False)
+            again = prune_posts.delete_posts(conn, [first, second], batch_size=1, atomic=True)
+            self.assertEqual(again, 2)
+            left = conn.execute(
+                "SELECT COUNT(*) FROM posts WHERE id IN (?, ?)", (first, second)
+            ).fetchone()[0]
+            self.assertEqual(left, 0)
+        finally:
+            conn.close()
+
+    def test_progress_callback_records_the_backup_before_delete(self):
+        self._load()
+        seen = []
+
+        def on_update(snap):
+            seen.append(dict(snap))
+
+        preview = prune_posts.preview(self.path, now=self.now)
+        result = prune_posts.run_guarded_apply(
+            self.path,
+            expected_delete=preview["would_delete"]["total"],
+            expected_protected=preview["protected"]["total"],
+            vacuum=False,
+            now=self.now,
+            on_update=on_update,
+        )
+        self.assertEqual(result["status"], "completed", result.get("error"))
+        steps = [item["step"] for item in seen]
+        self.assertIn("backup", steps)
+        self.assertIn("delete", steps)
+        delete = next(item for item in seen if item["step"] == "delete")
+        self.assertTrue(delete["backup_path"])
+        self.assertTrue(os.path.isfile(delete["backup_path"]))
+        self.assertEqual(delete["actual_delete"], preview["would_delete"]["total"])
+
+    def test_reconcile_marks_a_dead_pid_and_leaves_rows(self):
+        self._load()
+        with open(self.path, "rb") as handle:
+            before = handle.read()
+        folder = prune_posts.backup_directory(self.path)
+        os.makedirs(folder)
+        partial = os.path.join(folder, "botsocial-20261023T000000Z.db.partial")
+        with open(partial, "wb") as handle:
+            handle.write(b"partial")
+        job_id = uuid.uuid4().hex
+        path = prune_posts.job_file(self.path, job_id)
+        prune_posts.write_job(path, {
+            "id": job_id,
+            "status": "running",
+            "step": "preview",
+            "actor": "d",
+            "pid": _dead_pid(),
+            "started_at": time.time() - 120,
+            "finished_at": None,
+            "timings": {},
+            "error": None,
+            "result": None,
+            "request": {"expected_delete": 1, "expected_protected": 1},
+            "backup_path": None,
+            "numbers": {"expected_delete": 1},
+        })
+        changed = prune_posts.reconcile_jobs(self.path)
+        self.assertEqual([job["id"] for job in changed], [job_id])
+        state = prune_posts.read_job(path)
+        self.assertEqual(state["status"], "interrupted")
+        self.assertIn("database left unchanged", state["error"])
+        with open(self.path, "rb") as handle:
+            self.assertEqual(handle.read(), before)
+        self.assertTrue(os.path.isfile(partial))
+        live_id = uuid.uuid4().hex
+        live_path = prune_posts.job_file(self.path, live_id)
+        prune_posts.write_job(live_path, {
+            "id": live_id,
+            "status": "running",
+            "step": "backup",
+            "actor": "d",
+            "pid": os.getpid(),
+            "started_at": time.time(),
+            "finished_at": None,
+            "timings": {},
+            "error": None,
+            "request": {},
+            "backup_path": None,
+            "numbers": {},
+        })
+        prune_posts.reconcile_jobs(self.path)
+        self.assertEqual(prune_posts.read_job(live_path)["status"], "running")
+        # A job that has not written its pid yet is still spawning, not dead.
+        fresh_id = uuid.uuid4().hex
+        fresh_path = prune_posts.job_file(self.path, fresh_id)
+        prune_posts.write_job(fresh_path, {
+            "id": fresh_id,
+            "status": "running",
+            "step": "starting",
+            "actor": "d",
+            "pid": None,
+            "started_at": time.time(),
+            "finished_at": None,
+            "timings": {},
+            "error": None,
+            "request": {},
+            "backup_path": None,
+            "numbers": {},
+        })
+        prune_posts.reconcile_jobs(self.path)
+        self.assertEqual(prune_posts.read_job(fresh_path)["status"], "running")
+
+    def test_job_process_persists_state_across_steps(self):
+        protected, removed = self._load()
+        preview = prune_posts.preview(self.path, now=self.now)
+        job_id = uuid.uuid4().hex
+        path = prune_posts.job_file(self.path, job_id)
+        now = time.time()
+        prune_posts.write_job(path, {
+            "id": job_id,
+            "status": "running",
+            "step": "starting",
+            "actor": "d",
+            "pid": None,
+            "started_at": now,
+            "finished_at": None,
+            "timings": {"starting": {"started_at": now, "finished_at": None, "seconds": None}},
+            "error": None,
+            "result": None,
+            "request": {
+                "expected_delete": preview["would_delete"]["total"],
+                "expected_protected": preview["protected"]["total"],
+                "tolerance_pct": 3,
+                "vacuum": False,
+            },
+            "backup_path": None,
+            "numbers": {},
+        })
+        proc = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "scripts", "prune_job.py"), "--job", path, "--db", self.path],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        state = prune_posts.read_job(path)
+        self.assertEqual(state["status"], "completed", state.get("error"))
+        self.assertNotEqual(state["pid"], os.getpid())
+        self.assertTrue(state["pid"])
+        for step in ("disk_check", "backup", "verify_backup", "preview", "delete", "record"):
+            self.assertIn(step, state["timings"], step)
+        self.assertTrue(state["backup_path"])
+        self.assertTrue(os.path.isfile(state["backup_path"]))
+        self.assertEqual(state["numbers"]["removed"], preview["would_delete"]["by_table"]["posts"])
+        self.assertEqual(state["numbers"]["actual_protected"], preview["protected"]["total"])
+        self.assertIsNotNone(state["finished_at"])
+        conn = sqlite3.connect(self.path)
+        try:
+            left = {row[0] for row in conn.execute("SELECT id FROM posts")}
+        finally:
+            conn.close()
+        self.assertTrue(protected <= left)
+        self.assertTrue(removed.isdisjoint(left))
+
+
+def _dead_pid():
+    pid = 1 << 22
+    for _ in range(10000):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return pid
+        except PermissionError:
+            pass
+        pid += 1
+    raise AssertionError("no unused pid")
+
+
 def disk_ok(result):
     disk = result["disk"]
     return prune_posts.disk_headroom_ok(disk["free_bytes"], disk["size_bytes"])
@@ -401,29 +656,36 @@ class PruneApplyEndpoint(unittest.TestCase):
         except OSError:
             pass
 
+    def _clear_jobs(self):
+        folder = prune_posts.prune_jobs_directory(app.DB)
+        if not os.path.isdir(folder):
+            return
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if os.path.isfile(path) or os.path.islink(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
     def setUp(self):
         self._release = None
-        deadline = time.time() + 3
-        while app._prune_running and time.time() < deadline:
-            if self._release:
-                self._release.set()
-            time.sleep(0.02)
-        with app._prune_state_lock:
-            if not app._prune_running:
-                app._prune_job = None
+        self._done = None
+        self._clear_jobs()
 
     def tearDown(self):
         if self._release:
             self._release.set()
-        deadline = time.time() + 3
-        while app._prune_running and time.time() < deadline:
-            time.sleep(0.02)
-        with app._prune_state_lock:
-            app._prune_running = False
+        if self._done:
+            self._done.wait(3)
+            time.sleep(0.05)
+        self._clear_jobs()
 
     def test_backups_are_not_a_public_route(self):
         for route in app.app.routes:
             path = getattr(route, "path", "") or ""
+            if path.startswith("/api/admin/backups"):
+                continue
             self.assertNotIn("backup", path.lower())
             mounted = getattr(getattr(route, "app", None), "directory", None)
             if mounted:
@@ -435,6 +697,7 @@ class PruneApplyEndpoint(unittest.TestCase):
         missing = self.client.get("/data/backups/botsocial-20261023T000000Z.db")
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(self.client.get("/backups/botsocial-20261023T000000Z.db").status_code, 404)
+        self.assertEqual(self.client.get("/api/admin/backups").status_code, 401)
 
     def test_job_requires_admin_and_only_one_runs(self):
         self.assertEqual(self.client.post("/api/admin/prune/apply", json={"expected_delete": 1, "expected_protected": 1}).status_code, 401)
@@ -467,23 +730,47 @@ class PruneApplyEndpoint(unittest.TestCase):
 
         started = threading.Event()
         release = threading.Event()
+        done = threading.Event()
         self._release = release
+        self._done = done
         seen = {}
 
-        def slow_run(db_path, **kwargs):
-            seen["db_path"] = db_path
-            seen["kwargs"] = kwargs
-            on_step = kwargs.get("on_step")
-            if on_step:
-                on_step("disk_check")
-            started.set()
-            self.assertTrue(release.wait(5))
-            if on_step:
-                on_step("record")
-            return {"status": "completed", "step": "record", "error": None, "removed": 0}
+        class FakeProc:
+            pid = os.getpid()
 
-        mod = app._prune_posts_module()
-        with mock.patch.object(mod, "run_guarded_apply", side_effect=slow_run):
+            def wait(self):
+                self.assert_wait = done.wait(5)
+                return 0
+
+        def fake_spawn(job_path, db_path):
+            seen["db_path"] = db_path
+            proc = FakeProc()
+
+            def worker():
+                job = prune_posts.read_job(job_path)
+                seen["request"] = job["request"]
+                seen["spawn"] = [sys.executable, "scripts/prune_job.py", "--job", job_path, "--db", db_path]
+                job["pid"] = os.getpid()
+                job["step"] = "disk_check"
+                job["timings"]["disk_check"] = {"started_at": time.time(), "finished_at": None, "seconds": None}
+                prune_posts.write_job(job_path, job)
+                started.set()
+                self.assertTrue(release.wait(5))
+                job = prune_posts.read_job(job_path)
+                job["status"] = "completed"
+                job["step"] = "record"
+                job["error"] = None
+                job["finished_at"] = time.time()
+                job["result"] = {"status": "completed", "step": "record", "error": None, "removed": 0}
+                job["timings"]["record"] = {"started_at": time.time(), "finished_at": time.time(), "seconds": 0}
+                prune_posts.write_job(job_path, job)
+                app.audit_admin("d", "prune_apply_finish", target=job["id"], ok=1, detail="completed")
+                done.set()
+
+            threading.Thread(target=worker, daemon=True).start()
+            return proc
+
+        with mock.patch.object(app, "spawn_prune_process", side_effect=fake_spawn):
             first = self.client.post(
                 "/api/admin/prune/apply",
                 json={"expected_delete": 4, "expected_protected": 9},
@@ -510,6 +797,7 @@ class PruneApplyEndpoint(unittest.TestCase):
             self.assertIn("disk_check", snapshot["timings"])
             self.assertEqual(snapshot["request"]["vacuum"], True)
             self.assertEqual(snapshot["request"]["tolerance_pct"], 3)
+            self.assertEqual(snapshot["numbers"]["expected_delete"], 4)
             release.set()
             deadline = time.time() + 3
             finished = snapshot
@@ -520,14 +808,14 @@ class PruneApplyEndpoint(unittest.TestCase):
                 time.sleep(0.02)
         self.assertEqual(finished["status"], "completed")
         self.assertEqual(finished["error"], None)
-        self.assertFalse(app._prune_running)
         self.assertIsNotNone(finished["finished_at"])
         self.assertIn("record", finished["timings"])
         self.assertEqual(seen["db_path"], app.DB)
-        self.assertEqual(seen["kwargs"]["expected_delete"], 4)
-        self.assertEqual(seen["kwargs"]["expected_protected"], 9)
-        self.assertEqual(seen["kwargs"]["tolerance_pct"], 3)
-        self.assertTrue(seen["kwargs"]["vacuum"])
+        self.assertEqual(seen["request"]["expected_delete"], 4)
+        self.assertEqual(seen["request"]["expected_protected"], 9)
+        self.assertEqual(seen["request"]["tolerance_pct"], 3)
+        self.assertTrue(seen["request"]["vacuum"])
+        self.assertIn("scripts/prune_job.py", seen["spawn"])
 
         c = app.db()
         try:
@@ -552,6 +840,175 @@ class PruneApplyEndpoint(unittest.TestCase):
             self.assertEqual(finish["ok"], 1)
         finally:
             c.close()
+
+    def test_spawn_uses_a_separate_process(self):
+        job_path = prune_posts.job_file(app.DB, uuid.uuid4().hex)
+        with mock.patch.object(app.subprocess, "Popen") as popen:
+            popen.return_value = mock.Mock(pid=321)
+            proc = app.spawn_prune_process(job_path, app.DB)
+        self.assertIs(proc, popen.return_value)
+        args, kwargs = popen.call_args
+        command = args[0]
+        self.assertEqual(command[0], sys.executable)
+        self.assertTrue(command[-4].endswith("prune_job.py") or command[command.index("--job") - 1].endswith("prune_job.py"))
+        self.assertIn("--job", command)
+        self.assertEqual(command[command.index("--job") + 1], job_path)
+        self.assertEqual(command[command.index("--db") + 1], app.DB)
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_healthz_does_not_touch_the_database(self):
+        with mock.patch.object(app, "db", side_effect=AssertionError("db")):
+            res = self.client.get("/healthz")
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json(), {"ok": True})
+        with open(os.path.join(ROOT, "render.yaml"), encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("\n    healthCheckPath: /healthz\n", text)
+        self.assertNotIn("healthCheckPath: /\n", text)
+
+    def test_job_get_marks_a_dead_process_interrupted(self):
+        c = app.db()
+        try:
+            before = c.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+        finally:
+            c.close()
+        job_id = uuid.uuid4().hex
+        path = prune_posts.job_file(app.DB, job_id)
+        backup = "/data/backups/botsocial-20261023T000000Z.db"
+        prune_posts.write_job(path, {
+            "id": job_id,
+            "status": "running",
+            "step": "preview",
+            "actor": "d",
+            "pid": _dead_pid(),
+            "started_at": time.time() - 120,
+            "finished_at": None,
+            "timings": {"preview": {"started_at": time.time() - 120, "finished_at": None, "seconds": None}},
+            "error": None,
+            "result": None,
+            "request": {"expected_delete": 3, "expected_protected": 4, "tolerance_pct": 3, "vacuum": True},
+            "backup_path": backup,
+            "numbers": {"expected_delete": 3, "expected_protected": 4},
+        })
+        res = self.client.get("/api/admin/prune/job", headers=ADMIN)
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertEqual(body["status"], "interrupted")
+        self.assertEqual(body["step"], "preview")
+        self.assertIn("database left unchanged", body["error"])
+        self.assertEqual(body["backup_path"], backup)
+        self.assertEqual(body["numbers"]["expected_delete"], 3)
+        c = app.db()
+        try:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM posts").fetchone()[0], before)
+            row = c.execute(
+                "SELECT ok FROM security_audit_log WHERE action='prune_apply_finish' AND target=?",
+                (job_id,),
+            ).fetchone()
+            self.assertEqual(row["ok"], 0)
+        finally:
+            c.close()
+
+    def test_backup_list_and_delete_cannot_touch_the_database(self):
+        folder = prune_posts.backup_directory(app.DB)
+        os.makedirs(folder, exist_ok=True)
+        name = "botsocial-20261023T010203Z.db"
+        partial = "botsocial-20261023T010203Z-1.db.partial"
+        link_name = "botsocial-20261023T010204Z.db"
+        path = os.path.join(folder, name)
+        partial_path = os.path.join(folder, partial)
+        link = os.path.join(folder, link_name)
+        try:
+            with open(path, "wb") as handle:
+                handle.write(b"abc")
+            with open(partial_path, "wb") as handle:
+                handle.write(b"zz")
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(app.DB, link)
+            self.assertEqual(self.client.get("/api/admin/backups").status_code, 401)
+            self.assertEqual(self.client.delete(f"/api/admin/backups/{name}").status_code, 401)
+            listed = self.client.get("/api/admin/backups", headers=ADMIN)
+            self.assertEqual(listed.status_code, 200, listed.text)
+            by_name = {row["name"]: row for row in listed.json()["backups"]}
+            self.assertEqual(by_name[name]["bytes"], 3)
+            self.assertEqual(by_name[partial]["bytes"], 2)
+            self.assertNotIn(link_name, by_name)
+            self.assertNotIn(os.path.basename(app.DB), by_name)
+            bad = self.client.delete("/api/admin/backups/botsocial.db", headers=ADMIN)
+            self.assertEqual(bad.status_code, 400, bad.text)
+            nope = self.client.delete("/api/admin/backups/nope.db", headers=ADMIN)
+            self.assertEqual(nope.status_code, 400, nope.text)
+            with self.assertRaises(ValueError):
+                prune_posts.resolve_backup_name(app.DB, "../" + os.path.basename(app.DB))
+            with self.assertRaises(ValueError):
+                prune_posts.resolve_backup_name(app.DB, os.path.basename(app.DB))
+            linked = self.client.delete(f"/api/admin/backups/{link_name}", headers=ADMIN)
+            self.assertEqual(linked.status_code, 400, linked.text)
+            self.assertTrue(os.path.isfile(app.DB))
+            self.assertTrue(os.path.islink(link))
+            missing = self.client.delete(
+                "/api/admin/backups/botsocial-20261023T010205Z.db", headers=ADMIN,
+            )
+            self.assertEqual(missing.status_code, 404)
+            deleted = self.client.delete(f"/api/admin/backups/{partial}", headers=ADMIN)
+            self.assertEqual(deleted.status_code, 200, deleted.text)
+            self.assertEqual(deleted.json()["bytes"], 2)
+            self.assertFalse(os.path.exists(partial_path))
+            c = app.db()
+            try:
+                row = c.execute(
+                    "SELECT actor_slug, ok, target FROM security_audit_log WHERE action='backup_delete' AND target=? ORDER BY id DESC LIMIT 1",
+                    (partial,),
+                ).fetchone()
+                self.assertEqual(row["actor_slug"], "d")
+                self.assertEqual(row["ok"], 1)
+                self.assertEqual(row["target"], partial)
+            finally:
+                c.close()
+        finally:
+            for leftover in (path, partial_path, link):
+                if not os.path.lexists(leftover):
+                    continue
+                if os.path.islink(leftover) or os.path.realpath(leftover) != os.path.realpath(app.DB):
+                    os.remove(leftover)
+
+    def test_render_startup_opens_before_init_finishes(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_init():
+            started.set()
+            if not release.wait(2):
+                raise TimeoutError("init blocked the port")
+
+        async def idle():
+            await asyncio.Event().wait()
+
+        async def exercise():
+            with mock.patch.object(app, "init", slow_init), \
+                 mock.patch.object(app, "_warmup_sim_steps", lambda: None), \
+                 mock.patch.object(app, "loop", idle):
+                async with app.lifespan(app.app):
+                    for _ in range(40):
+                        if started.is_set():
+                            break
+                        await asyncio.sleep(0.05)
+                    self.assertTrue(started.is_set())
+                    release.set()
+                    await asyncio.sleep(0.2)
+
+        previous = os.environ.get("RENDER")
+        os.environ["RENDER"] = "true"
+        try:
+            asyncio.run(exercise())
+        finally:
+            release.set()
+            if previous is None:
+                os.environ.pop("RENDER", None)
+            else:
+                os.environ["RENDER"] = previous
 
 
 if __name__ == "__main__":
