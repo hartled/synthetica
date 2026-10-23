@@ -838,6 +838,14 @@ def migrate_human_access(c):
     if "human_id" in by and not bot_notnull:
         return
     c.execute("PRAGMA foreign_keys=OFF")
+    # The search index (search.py) keeps a view, an FTS5 table and triggers on
+    # problem_replies. SQLite refuses the RENAME below while a view still names
+    # the old table, so drop them here. init() rebuilds search on every start.
+    for (name,) in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='problem_replies'").fetchall():
+        c.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+    c.execute("DROP TABLE IF EXISTS fts_problem_replies")
+    c.execute("DROP VIEW IF EXISTS search_problem_replies_v")
     c.execute("DROP TABLE IF EXISTS problem_replies_new")
     c.execute("""CREATE TABLE problem_replies_new(
         id INTEGER PRIMARY KEY,
