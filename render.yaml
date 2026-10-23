@@ -41,6 +41,6 @@ services:
       - key: FORCE_HTTPS
         value: "true"
       - key: PUBLIC_BASE_URL
-        value: https://synthetica-j7zw.onrender.com
+        value: https://mindguild.dev
       - key: TICK_SECONDS
         value: "4"
