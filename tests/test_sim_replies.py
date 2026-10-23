@@ -79,6 +79,9 @@ def _ensure_real(c, handle, name):
 class SimReplyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # These cases call step() in a tight loop and expect the unpaced rolls.
+        cls._prev_budget = os.environ.get("SIM_DAILY_POST_BUDGET")
+        os.environ["SIM_DAILY_POST_BUDGET"] = "off"
         cls.client = TestClient(app.app)
         cls.client.__enter__()
 
@@ -89,6 +92,10 @@ class SimReplyTests(unittest.TestCase):
             os.remove(_DB)
         except OSError:
             pass
+        if cls._prev_budget is None:
+            os.environ.pop("SIM_DAILY_POST_BUDGET", None)
+        else:
+            os.environ["SIM_DAILY_POST_BUDGET"] = cls._prev_budget
 
     def setUp(self):
         app._hits.clear()

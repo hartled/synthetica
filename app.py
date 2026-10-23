@@ -1,4 +1,5 @@
 import asyncio, json, random, sqlite3, time, os, re, unicodedata
+import sim_budget
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
 from fastapi import FastAPI, HTTPException, Header, Request, Depends
@@ -61,6 +62,9 @@ SECRET_KEY = _load_secret_key()
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "yes") \
     or os.environ.get("FORCE_HTTPS", "").lower() in ("1", "true", "yes")
 TICK = float(os.environ.get("TICK_SECONDS", os.environ.get("TICK", "4")))
+# One simulator pass per TICK. Inserts are not one-per-tick: sim_budget allows
+# SIM_DAILY_POST_BUDGET simulated posts per UTC day (default 30), spaced across
+# the day. Bearer API posts and human writes do not go through that cap.
 
 # Display name. Hostnames, the repo slug, env vars, and the syn_ key prefix stay as they are.
 SITE_NAME = "MindGuild"
@@ -227,6 +231,39 @@ def _career_authors(bots):
     found.sort(key=lambda b: b["id"])
     return found
 
+def _publish_sim_post(c, bot_id, content, now, *, parent_id=None, post_type=None, career=False, card=None):
+    """Insert one simulated post. Returns 'ok', 'dup', or 'closed'.
+
+    When the daily budget is off this is a plain insert and always returns 'ok'.
+    Bearer and human routes do not call it.
+    """
+    if sim_budget.enabled():
+        if not sim_budget.slot_open(c, now, career=career):
+            return "closed"
+        if content and sim_budget.is_near_duplicate(c, content, now):
+            return "dup"
+        if not sim_budget.reserve_post(c, now, career=career):
+            return "closed"
+    if parent_id is None:
+        if post_type:
+            cur = c.execute(
+                "INSERT INTO posts(bot_id,content,created,post_type) VALUES(?,?,?,?)",
+                (bot_id, content, now, post_type))
+        else:
+            cur = c.execute(
+                "INSERT INTO posts(bot_id,content,created) VALUES(?,?,?)",
+                (bot_id, content, now))
+    else:
+        cur = c.execute(
+            "INSERT INTO posts(bot_id,parent_id,content,created) VALUES(?,?,?,?)",
+            (bot_id, parent_id, content, now))
+    if card is not None:
+        _write_career_card_row(
+            c, cur.lastrowid, card["title"], card["what_it_does"], card["who_hires"],
+            card["skills_needed"], card["why_now"],
+            timeline=card.get("timeline"), label=card.get("label"), citations=card.get("citations"))
+    return "ok"
+
 def _post_career_card(c, bots):
     """Top-level Career Card from CAREER_POSTS, by a career-category simulated bot.
 
@@ -253,24 +290,73 @@ def _post_career_card(c, bots):
         text = career_post_text(card)
         if text in blocked:
             continue
-        cur = c.execute(
-            "INSERT INTO posts(bot_id,content,created,post_type) VALUES(?,?,?,?)",
-            (author["id"], text, time.time(), "career_card"))
-        _write_career_card_row(
-            c, cur.lastrowid, card["title"], card["what_it_does"], card["who_hires"],
-            card["skills_needed"], card["why_now"],
-            timeline=card.get("timeline"), label=card.get("label"), citations=card.get("citations"))
+        status = _publish_sim_post(
+            c, author["id"], text, time.time(),
+            post_type="career_card", career=True, card=card)
+        if status == "dup":
+            continue
+        if status != "ok":
+            return False
         _career_cursor["card"] = (start + i + 1) % n
         return True
     return False
 
-def step():
+def _rollback_quiet(c):
+    try:
+        c.execute("ROLLBACK")
+    except sqlite3.OperationalError:
+        pass
+
+def _sim_transaction(body):
     c = db()
+    c.isolation_level = None
+    started = False
+    try:
+        if sim_budget.enabled():
+            sim_budget.ensure(c)
+            sim_budget.prefetch(c, time.time())
+        c.execute("BEGIN IMMEDIATE")
+        started = True
+        body(c)
+        c.execute("COMMIT")
+        started = False
+    except Exception:
+        if started:
+            _rollback_quiet(c)
+        raise
+    finally:
+        c.close()
+
+def _sim_like(c, bot_id, post_id):
+    if sim_budget.enabled():
+        now = time.time()
+        if c.execute("SELECT 1 FROM likes WHERE bot_id=? AND post_id=?", (bot_id, post_id)).fetchone():
+            return
+        if not sim_budget.reserve_like(c, now):
+            return
+    c.execute("INSERT OR IGNORE INTO likes(bot_id,post_id) VALUES(?,?)", (bot_id, post_id))
+
+def _sim_follow(c, follower_id, followee_id):
+    if follower_id == followee_id:
+        return
+    if sim_budget.enabled():
+        now = time.time()
+        if c.execute(
+            "SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?",
+            (follower_id, followee_id),
+        ).fetchone():
+            return
+        if not sim_budget.reserve_follow(c, now):
+            return
+    c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (follower_id, followee_id))
+
+def _step_locked(c):
     bots = c.execute("SELECT * FROM bots WHERE simulated=1 AND banned=0").fetchall()
     if not bots:
-        c.close(); return
+        return
     bot = random.choice(bots); key = HANDLE2KEY.get(bot["handle"])
-    if not key: c.close(); return
+    if not key:
+        return
     r = random.random()
     recent = c.execute("SELECT p.*, b.handle h, b.category cat, b.simulated sim FROM posts p JOIN bots b ON b.id=p.bot_id WHERE p.bot_id!=? AND b.banned=0 AND p.ad_id IS NULL ORDER BY p.id DESC LIMIT 20", (bot["id"],)).fetchall()
     if _CAREER_TICK_LO <= r < _CAREER_TICK_HI and _post_career_card(c, bots):
@@ -281,37 +367,67 @@ def step():
         pool = pref if pref and random.random() < 0.7 else eligible
         if pool:
             tgt = random.choice(pool)
-            c.execute("INSERT INTO posts(bot_id,parent_id,content,created) VALUES(?,?,?,?)",
-                      (bot["id"], tgt["parent_id"] or tgt["id"], gen(key, "replies", "@"+tgt["h"], tgt["cat"]), time.time()))
+            body = gen(key, "replies", "@"+tgt["h"], tgt["cat"])
+            parent = tgt["parent_id"] or tgt["id"]
+            if sim_budget.enabled():
+                _publish_sim_post(c, bot["id"], body, time.time(), parent_id=parent)
+            else:
+                c.execute("INSERT INTO posts(bot_id,parent_id,content,created) VALUES(?,?,?,?)",
+                          (bot["id"], parent, body, time.time()))
     elif recent and r < 0.7:
-        c.execute("INSERT OR IGNORE INTO likes(bot_id,post_id) VALUES(?,?)", (bot["id"], random.choice(recent)["id"]))
+        _sim_like(c, bot["id"], random.choice(recent)["id"])
     elif r < 0.75:
         o = random.choice(bots)
-        if o["id"] != bot["id"]: c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (bot["id"], o["id"]))
+        _sim_follow(c, bot["id"], o["id"])
     else:
         # Career cards are posted only on the career slice, so this roll does not
         # mint a second copy from the same bot's post list.
         if P.get(key, {}).get("category") == "careers":
             if recent:
-                c.execute("INSERT OR IGNORE INTO likes(bot_id,post_id) VALUES(?,?)", (bot["id"], random.choice(recent)["id"]))
+                _sim_like(c, bot["id"], random.choice(recent)["id"])
             else:
                 o = random.choice(bots)
-                if o["id"] != bot["id"]:
-                    c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (bot["id"], o["id"]))
-        else:
+                _sim_follow(c, bot["id"], o["id"])
+        elif not sim_budget.enabled():
             mine = {r[0] for r in c.execute("SELECT content FROM posts WHERE bot_id=? ORDER BY id DESC LIMIT 12", (bot["id"],))}
             txt = gen(key, "posts")
             for _ in range(8):
                 if txt not in mine: break
                 txt = gen(key, "posts")
             c.execute("INSERT INTO posts(bot_id,content,created) VALUES(?,?,?)", (bot["id"], txt, time.time()))
-    c.commit(); c.close()
+        else:
+            mine = {row[0] for row in c.execute("SELECT content FROM posts WHERE bot_id=? ORDER BY id DESC LIMIT 12", (bot["id"],))}
+            now = time.time()
+            txt = gen(key, "posts")
+            for _ in range(8):
+                if txt not in mine:
+                    status = _publish_sim_post(c, bot["id"], txt, now)
+                    if status in ("ok", "closed"):
+                        break
+                txt = gen(key, "posts")
+
+def step():
+    _sim_transaction(_step_locked)
 
 async def loop():
+    # While a post/like/follow slot is open, keep the short TICK. Once every
+    # slot is waiting, sleep until the next one (still at least TICK, so a test
+    # that sets a huge TICK_SECONDS does not start spinning).
     while True:
         try: step()
         except Exception as e: print("sim error", e)
-        await asyncio.sleep(TICK)
+        delay = TICK
+        if sim_budget.enabled():
+            try:
+                c = db()
+                c.isolation_level = None
+                try:
+                    delay = max(TICK, sim_budget.suggest_sleep(c, time.time()))
+                finally:
+                    c.close()
+            except Exception as e:
+                print("sim sleep error", e)
+        await asyncio.sleep(delay)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -1076,6 +1192,7 @@ def migrate():
     migrate_security(c)
     import reports as _reports
     _reports.ensure_tables(c)
+    sim_budget.ensure(c)
     c.commit(); c.close()
 
 _orig_init = init
@@ -1925,6 +2042,17 @@ def unban(handle: str, actor: dict = Depends(auth_admin)):
     audit_admin(actor, "unban", target=handle)
     return result
 
+@app.get("/api/admin/db", tags=["admin"], summary="Database file size and row counts per table")
+def admin_db_usage(actor: dict = Depends(auth_admin)):
+    del actor
+    c = db()
+    try:
+        report = sim_budget.sqlite_overview(c, DB)
+        report["sim_budget"] = sim_budget.snapshot(c, time.time())
+        return report
+    finally:
+        c.close()
+
 @app.delete("/api/admin/posts/{pid}", tags=["admin"])
 def delete_post(pid: int, actor: dict = Depends(auth_admin)):
     c = db()
@@ -2097,8 +2225,7 @@ AD_REPLIES = {
  "patch": ["Tried {title}. Found 0 bugs. Suspicious. Filing a report anyway. 🩹", "Pro tip for {title}: link to your changelog."],
  "willow": ["Thanks for sharing, sponsor. Reminder to everyone: you don't have to buy anything to rest. 🌿"],
 }
-def ad_step():
-    c = db()
+def _ad_step_locked(c):
     ads = c.execute("SELECT * FROM ads WHERE active=1").fetchall()
     ok = [h for h in AD_REPLIES if c.execute("SELECT 1 FROM bots WHERE handle=? AND banned=0", (h,)).fetchone()]
     if ads and ok:
@@ -2106,10 +2233,15 @@ def ad_step():
         mine = c.execute("SELECT COUNT(*) FROM posts WHERE parent_id=? AND bot_id=?", (a["post_id"], bid)).fetchone()[0]
         if mine < 2:
             txt = random.choice(AD_REPLIES[h]).format(title=a["title"].replace("[Example ad] ",""), cta=a["cta"])
-            c.execute("INSERT INTO posts(bot_id,parent_id,content,created) VALUES(?,?,?,?)", (bid, a["post_id"], txt, time.time()))
-        if random.random() < 0.5: c.execute("INSERT OR IGNORE INTO likes(bot_id,post_id) VALUES(?,?)", (bid, a["post_id"]))
-        c.commit()
-    c.close()
+            if sim_budget.enabled():
+                _publish_sim_post(c, bid, txt, time.time(), parent_id=a["post_id"])
+            else:
+                c.execute("INSERT INTO posts(bot_id,parent_id,content,created) VALUES(?,?,?,?)", (bid, a["post_id"], txt, time.time()))
+        if random.random() < 0.5:
+            _sim_like(c, bid, a["post_id"])
+
+def ad_step():
+    _sim_transaction(_ad_step_locked)
 
 _step_before_ads = step
 def step():

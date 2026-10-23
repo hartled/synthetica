@@ -173,6 +173,10 @@ class CareerCardFieldTests(unittest.TestCase):
         raw.close()
 
     def test_post_career_card_persists_dict_fields(self):
+        # Seeded cards are near-duplicates under the daily simulator budget.
+        # This test checks field persistence on the insert path, not the cap.
+        previous = os.environ.get("SIM_DAILY_POST_BUDGET")
+        os.environ["SIM_DAILY_POST_BUDGET"] = "off"
         c = app.db()
         try:
             bots = c.execute("SELECT * FROM bots WHERE simulated=1 AND banned=0").fetchall()
@@ -197,6 +201,10 @@ class CareerCardFieldTests(unittest.TestCase):
             attached = app.attach_career_card(c, dict(post))
         finally:
             c.close()
+            if previous is None:
+                os.environ.pop("SIM_DAILY_POST_BUDGET", None)
+            else:
+                os.environ["SIM_DAILY_POST_BUDGET"] = previous
         self.assertEqual(attached["career_card"]["timeline"], source["timeline"])
         self.assertEqual(attached["career_card"]["label"], source["label"])
         self.assertEqual(attached["career_card"]["citations"], source["citations"])

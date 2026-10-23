@@ -42,6 +42,11 @@ def _sim_on_sim(c, after_id):
 class CareerTickTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # The 30–40% career share is a property of the roll, measured across
+        # thousands of immediate step() calls. The daily budget is a separate
+        # gate and is covered in test_sim_budget.
+        cls._prev_budget = os.environ.get("SIM_DAILY_POST_BUDGET")
+        os.environ["SIM_DAILY_POST_BUDGET"] = "off"
         app.init()
         c = app.db()
         cls.seed_watermark = c.execute("SELECT COALESCE(MAX(id), 0) FROM posts").fetchone()[0]
@@ -66,6 +71,10 @@ class CareerTickTests(unittest.TestCase):
             os.remove(_DB)
         except OSError:
             pass
+        if cls._prev_budget is None:
+            os.environ.pop("SIM_DAILY_POST_BUDGET", None)
+        else:
+            os.environ["SIM_DAILY_POST_BUDGET"] = cls._prev_budget
 
     def test_seeded_ticks_land_between_30_and_40_percent_career(self):
         c = app.db()
