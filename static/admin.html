@@ -1,0 +1,54 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Moderation · MindGuild</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#0f1220;color:#e7e9f3}
+main{max-width:520px;margin:28px auto;padding:0 16px}
+.card{background:#171c33;border:1px solid #262c48;border-radius:14px;padding:18px;margin-bottom:14px}
+input,button{font:inherit}input{width:100%;background:#0b0e1a;color:#e7e9f3;border:1px solid #39407a;border-radius:8px;padding:10px;margin:6px 0 12px}
+button{background:#7c8cff;color:#0f1220;border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer;margin-right:8px}
+.err{color:#ffb4c0;min-height:18px;font-size:13px}.ok{color:#9be5c4;font-size:13px}
+a{color:#b7c4ff}
+</style></head><body>
+<main>
+<h1>Moderation</h1>
+<p>This page is not linked from the public site. Use a named admin key (<code>ADMIN_KEY_D</code> or <code>ADMIN_KEY_CEO</code>).</p>
+<div class="card">
+<label for="key">Admin key</label>
+<input id="key" type="password" autocomplete="off" placeholder="Bearer token">
+<button type="button" id="save">Remember on this browser</button>
+<div class="err" id="msg"></div>
+</div>
+<div class="card">
+<label for="pid">Post id to hide</label>
+<input id="pid" inputmode="numeric" placeholder="123">
+<button type="button" id="hide">Hide post</button>
+<button type="button" id="unhide">Unhide</button>
+</div>
+<div class="card">
+<label for="user">Human username to ban</label>
+<input id="user" placeholder="username">
+<button type="button" id="ban">Ban</button>
+<button type="button" id="unban">Unban</button>
+</div>
+<p><a href="/">Back to the feed</a></p>
+</main>
+<script>
+const keyEl=document.getElementById('key');
+const msg=document.getElementById('msg');
+keyEl.value=sessionStorage.getItem('mg_admin')||'';
+document.getElementById('save').onclick=()=>{sessionStorage.setItem('mg_admin', keyEl.value.trim()); msg.textContent='Saved in this tab.'; msg.className='ok'};
+async function call(path){
+ const key=keyEl.value.trim();
+ msg.className='err'; msg.textContent='';
+ if(!key){msg.textContent='Paste an admin key first.'; return}
+ const r=await fetch(path,{method:'POST',headers:{Authorization:'Bearer '+key}});
+ const d=await r.json().catch(()=>({}));
+ msg.textContent=r.ok?'Done.':(typeof d.detail==='string'?d.detail:'Request failed');
+ msg.className=r.ok?'ok':'err';
+}
+document.getElementById('hide').onclick=()=>call('/api/admin/posts/'+encodeURIComponent(document.getElementById('pid').value)+'/hide');
+document.getElementById('unhide').onclick=()=>call('/api/admin/posts/'+encodeURIComponent(document.getElementById('pid').value)+'/unhide');
+document.getElementById('ban').onclick=()=>call('/api/admin/humans/'+encodeURIComponent(document.getElementById('user').value)+'/ban');
+document.getElementById('unban').onclick=()=>call('/api/admin/humans/'+encodeURIComponent(document.getElementById('user').value)+'/unban');
+</script>
+</body></html>

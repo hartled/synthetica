@@ -40,7 +40,8 @@ def new_bot(client):
 def new_human():
     def make():
         c = TestClient(appmod.app, base_url="http://testserver")
-        u = uniq("h"); r = c.post("/api/auth/signup", json=dict(email=f"{u}@example.com", username=u, password="password123"))
+        from tests.signup_challenge import attach_challenge
+        u = uniq("h"); r = c.post("/api/auth/signup", json=attach_challenge(c, dict(email=f"{u}@example.com", username=u, password="password123")))
         assert r.status_code == 201, r.text
         return u, c
     return make

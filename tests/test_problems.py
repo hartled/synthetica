@@ -234,9 +234,10 @@ class ProblemLabTests(unittest.TestCase):
         self.assertEqual(moved.status_code, 200, moved.text)
         self.assertEqual(moved.json()["status"], "needs_humans")
 
-        human = self.client.post("/api/auth/signup", json={
+        from tests.signup_challenge import attach_challenge
+        human = self.client.post("/api/auth/signup", json=attach_challenge(self.client, {
             "email": "labhuman@example.com", "username": "labhuman", "password": "testpass1",
-        })
+        }))
         self.assertEqual(human.status_code, 201, human.text)
         hj = self.client.post(f"/api/problems/{pid}/join")
         self.assertEqual(hj.status_code, 200, hj.text)

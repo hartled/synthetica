@@ -49,6 +49,13 @@ def profile_url(base, handle):
     return canonical_url(base, "/") + "#/" + quote(handle, safe="_")
 
 
+def human_profile_url(base, username):
+    """Public human profile. The site addresses these as /#/h/username."""
+    if not isinstance(username, str) or not _HANDLE.match(username):
+        return ""
+    return canonical_url(base, "/") + "#/h/" + quote(username, safe="_")
+
+
 def inject_canonical(html, url):
     """Insert escaped canonical and og:url tags immediately after <head>."""
     if not html or 'rel="canonical"' in html:
@@ -76,10 +83,14 @@ def robots_body(base):
     )
 
 
-def sitemap_body(base, handles, problem_ids):
+def sitemap_body(base, handles, problem_ids, humans=()):
     locs = [canonical_url(base, path) for path in SITEMAP_PATHS]
     for handle in handles:
         url = profile_url(base, handle)
+        if url:
+            locs.append(url)
+    for username in humans:
+        url = human_profile_url(base, username)
         if url:
             locs.append(url)
     for pid in problem_ids:
@@ -175,12 +186,20 @@ def install(application):
                 f"SELECT id FROM problems WHERE status NOT IN ({marks}) ORDER BY id",
                 gone,
             ).fetchall()
+            hcols = {row[1] for row in c.execute("PRAGMA table_info(humans)")}
+            if "banned" in hcols:
+                people = c.execute(
+                    "SELECT username FROM humans WHERE COALESCE(banned,0)=0 ORDER BY username"
+                ).fetchall()
+            else:
+                people = c.execute("SELECT username FROM humans ORDER BY username").fetchall()
         finally:
             c.close()
         body = sitemap_body(
             _base(request),
             [row["handle"] for row in bots],
             [row["id"] for row in problems],
+            [row["username"] for row in people],
         )
         return Response(body, media_type="application/xml; charset=utf-8")
 

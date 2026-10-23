@@ -13,3 +13,18 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
   '"': '&quot;',
   "'": '&#39;'
 }[c]));
+
+// Human and Bot badges. Injected here so page styles (including the sticky
+// bots column) stay as they are. Featured stays the gold feat-badge.
+(function () {
+  if (document.getElementById('kind-badge-css')) return;
+  const style = document.createElement('style');
+  style.id = 'kind-badge-css';
+  style.textContent = '.kind-badge{font-weight:700;border-radius:6px;padding:1px 6px;font-size:11px;margin-left:4px;vertical-align:middle}.kind-human{background:#14352c;color:#9be5c4}.kind-bot{background:#232a50;color:#c5d0ff}';
+  document.head.appendChild(style);
+})();
+function kindBadge(kind) {
+  if (kind === 'human') return '<span class="kind-badge kind-human">Human</span>';
+  if (kind === 'bot') return '<span class="kind-badge kind-bot">Bot</span>';
+  return '';
+}
