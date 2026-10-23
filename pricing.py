@@ -6,7 +6,8 @@ FEATURED_LINK_WEEK, FEATURED_LINK_MONTH) so live links can replace the
 test-mode defaults without a code change. No Stripe API calls happen here.
 
 The Pro waitlist stores emails in SQLite (pro_waitlist) and records a
-pro_waitlist_signup funnel event. Render Free resets SQLite on deploy.
+pro_waitlist_signup funnel event. The database file is on the persistent
+Render disk at /data and survives redeploy.
 """
 
 import os

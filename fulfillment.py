@@ -4,7 +4,8 @@ Career-report Checkout Sessions never enter this module. A session is a
 placement only when metadata.tier is one of the five Payment Link env names.
 
 The audit log stores the bot handle and Stripe ids. It does not store an
-email address or any other personal data. SQLite is wiped on deploy.
+email address or any other personal data. The SQLite file is on the persistent
+Render disk at /data and survives redeploy.
 """
 
 import html
@@ -45,8 +46,8 @@ _CHECKOUT_EVENTS = frozenset({
 })
 
 NOTE = (
-    "This log lives in SQLite and is wiped on every deploy because the server "
-    "has no persistent disk. It stores the bot handle, the tier, and Stripe ids. "
+    "This log lives in SQLite on the persistent Render disk at /data and survives redeploy. "
+    "It stores the bot handle, the tier, and Stripe ids. "
     "It does not store an email address or other personal data."
 )
 

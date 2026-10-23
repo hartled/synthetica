@@ -1,7 +1,7 @@
 """First-party counts for the AI Career Report funnel.
 
-Rows live in the same SQLite file as the rest of the site. Render has no
-persistent disk, so these counts reset on every deploy. Nothing here stores
+Rows live in the same SQLite file as the rest of the site, on the persistent
+Render disk at /data, so these counts survive redeploy. Nothing here stores
 an IP address, a cookie, a user agent, or other personal data.
 
 record_event(event, src=None, report_id=None) writes one row unless the
@@ -271,7 +271,7 @@ def summary(now=None):
         "since": start_day,
         "until": end_day,
         "timezone": "UTC",
-        "note": "Counts reset on each deploy because there is no persistent disk.",
+        "note": "Counts are stored in SQLite on the persistent Render disk at /data and survive redeploy.",
         "totals": _with_rates(totals),
         "by_src": src_rows,
         "by_day": day_rows,

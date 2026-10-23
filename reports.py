@@ -10,8 +10,8 @@ fulfillment.py and does not unlock a career report. While payments are off, a pe
 is only created for an authenticated admin actor (the named d / ceo keys).
 /reports/sample is public and uses a fictional persona.
 
-Render Free has no persistent disk. Waitlist rows and saved reports live in
-SQLite and disappear on deploy. WAITLIST_WEBHOOK_URL, when set, receives a
+The database file is on the persistent Render disk at /data. Waitlist rows
+and saved reports survive redeploy. WAITLIST_WEBHOOK_URL, when set, receives a
 POST for each new signup.
 """
 
@@ -667,7 +667,7 @@ def render_landing(values=None, errors=None, notice=""):
             "<p>Checkout uses Stripe. The amount charged is the Stripe Price plus any applicable tax. "
             f"The price shown here is {esc(price)} + applicable tax. "
             "The report is created when Stripe sends a paid webhook. The success page opens it if you come back. "
-            "The finished report is stored in SQLite on the server. A deploy on the free host can erase it, so download the PDF.</p>"
+            "The finished report is stored in SQLite on the persistent Render disk at /data and survives redeploy. Download the PDF if you want a copy on your own device.</p>"
             f"{_error_summary(errors)}"
             "<form method=\"post\" action=\"/api/reports/checkout\" novalidate>"
             + _field("current_job", "Current job", values.get("current_job"), errors.get("current_job"), required=True, autocomplete="organization-title")
@@ -684,10 +684,9 @@ def render_landing(values=None, errors=None, notice=""):
         form = (
             "<h2>Coming soon. Join the waitlist</h2>"
             "<p>Personal reports are not for sale yet. Join the waitlist and we will keep your email with the interests you choose to share.</p>"
-            "<div class=\"note\"><p><strong>The waitlist does not survive a deploy.</strong> "
-            "This app stores it in SQLite on the server. The free host has no persistent disk, so a deploy wipes that database. "
-            "When a forwarding hook is configured, each new signup is also posted there so it can be copied to durable storage. "
-            "Until that hook is set, treat this list as temporary.</p></div>"
+            "<div class=\"note\"><p><strong>The waitlist is kept across deploys.</strong> "
+            "This app stores it in SQLite on the persistent Render disk at /data, so a redeploy does not wipe it. "
+            "When a forwarding hook is configured, each new signup is also posted there.</p></div>"
             f"{_error_summary(errors)}"
             "<form method=\"post\" action=\"/api/reports/waitlist\" novalidate>"
             + _field("email", "Email", values.get("email"), errors.get("email"), required=True, input_type="email", autocomplete="email")
@@ -762,8 +761,8 @@ def render_success(report_id):
     main = (
         "<div class=\"card\">"
         "<h1>Your report is ready</h1>"
-        "<p>Payment was confirmed. Open the report and save the PDF. "
-        "A deploy on the free host can erase the server copy.</p>"
+        "<p>Payment was confirmed. Open the report and download the PDF if you want a copy. "
+        "The server copy is on the persistent disk at /data and survives redeploy.</p>"
         f"<div class=\"row\"><a class=\"btn\" href=\"{esc(link)}\">Open your report</a></div>"
         "<p><a href=\"/refunds\">7-day refund policy</a></p>"
         "</div>"
@@ -789,7 +788,7 @@ def render_report_html(report, *, kind):
         extra = "Admin preview. This was not a paid purchase." if kind == "preview" else "Payment was confirmed before this report was created."
         banner = (
             f"<div class=\"card\"><h1>{esc(title)}</h1><p>{esc(extra)}</p>"
-            "<p class=\"note\">Save the PDF. This copy lives in the server database, and a deploy on the free host can erase it.</p>"
+            "<p class=\"note\">Save the PDF if you want a local copy. This report stays in SQLite on the persistent disk at /data and survives redeploy.</p>"
             "<!-- report-pdf --></div>"
         )
         robots = "noindex"
