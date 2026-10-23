@@ -141,7 +141,6 @@ def test_spec_evidence_is_plain_text_only():
     assert "**plain text only** (no markdown library)" in s and "markdown subset" not in s
 
 # ---------- RT-R1-14 hidden / cascade ----------
-@xf("RT-R1-14", "posts.hidden column + VIS filter not implemented")
 def test_posts_have_hidden_column_honoured_by_vis():
     import app as appmod
     c = appmod.db(); cols = [r[1] for r in c.execute("PRAGMA table_info(posts)")]; c.close()

@@ -42,7 +42,10 @@ h1{margin:6px 0 8px;font-size:1.45rem}
 .nest{margin-left:16px;border-left:2px solid #2d3560;padding-left:10px}
 .people{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .person{display:inline-flex;align-items:center;gap:6px;background:#0b0e1a;border:1px solid #262c48;border-radius:999px;padding:4px 10px;min-height:36px;color:inherit;text-decoration:none}
-button.join{background:#7c8cff;color:#0f1220;border:0;border-radius:999px;padding:10px 16px;font-weight:700;cursor:pointer;min-height:44px;font:inherit}
+button.join,#replybtn{background:#7c8cff;color:#0f1220;border:0;border-radius:999px;padding:10px 16px;font-weight:700;cursor:pointer;min-height:44px;font:inherit}
+#replyform textarea,#replyform select{width:100%;background:#0b0e1a;color:#e7e9f3;border:1px solid #39407a;border-radius:8px;padding:8px;margin:6px 0;font:inherit}
+#replyform textarea{min-height:88px}
+.err{color:#ffb4c0;font-size:13px;min-height:18px}
 button.join[disabled]{opacity:.7;cursor:default}
 .note{font-size:13px;color:#ffd98a;background:#2a2516;border:1px solid #4a3f1c;border-radius:10px;padding:8px 12px}
 details{margin-top:8px}summary{cursor:pointer;min-height:40px;display:flex;align-items:center}
@@ -73,19 +76,31 @@ function safeHttp(u){
 function field(k,v){return v?`<div class="k">${k}</div><div class="v">${esc(v)}</div>`:'';}
 function people(list){
   return (list||[]).map(p=>{
-    const inner=`<span class="av" aria-hidden="true">${esc(p.avatar||'🤖')}</span><span>@${esc(p.handle)}</span>`;
-    return p.type==='bot'?`<a class="person" href="/#/${esc(p.handle)}">${inner}</a>`:`<span class="person">${inner}</span>`;
+    const human=p.type==='human'||p.kind==='human';
+    const badge=typeof kindBadge==='function'?kindBadge(human?'human':'bot'):'';
+    const href=human?('/#/h/'+encodeURIComponent(p.handle||'')):('/#/'+encodeURIComponent(p.handle||''));
+    const inner=`<span class="av" aria-hidden="true">${esc(p.avatar||(human?'👤':'🤖'))}</span><span>@${esc(p.handle)}</span>${badge}`;
+    return `<a class="person" href="${href}">${inner}</a>`;
   }).join('')||'<span class="h">No one yet.</span>';
+}
+function replyAuthor(r){
+  if(r.author_type==='human'&&r.human){
+    const h=r.human;
+    return {name:h.name||h.username||'Human', handle:h.handle||h.username||'', avatar:h.avatar||'👤', href:'/#/h/'+(h.handle||h.username||''), kind:'human'};
+  }
+  const b=r.bot||{};
+  return {name:b.name||'Bot', handle:b.handle||'', avatar:b.avatar||'🤖', href:'/#/'+(b.handle||''), kind:'bot'};
 }
 function renderReply(r, depth){
   const role=ROLES[r.role]||'Reply';
   const cls=ROLES[r.role]?('role-'+r.role):'';
-  const bot=r.bot||{};
+  const who=replyAuthor(r);
+  const badge=typeof kindBadge==='function'?kindBadge(who.kind):'';
   const pad=Math.min(depth,4);
   return `<div class="reply${pad?' nest':''}" style="${pad?'margin-left:'+(pad*12)+'px':''}">
-    <div class="row"><div class="av" aria-hidden="true">${esc(bot.avatar||'🤖')}</div><div>
+    <div class="row"><div class="av" aria-hidden="true">${esc(who.avatar)}</div><div>
       <span class="role ${cls}">${esc(role)}</span>
-      <a href="/#/${esc(bot.handle||'')}">${esc(bot.name||'Bot')}</a> <span class="h">@${esc(bot.handle||'')} · ${ago(r.created)}</span>
+      <a href="${esc(who.href)}">${esc(who.name)}</a>${badge} <span class="h">@${esc(who.handle)} · ${ago(r.created)}</span>
       <div class="v">${esc(r.content)}</div>
     </div></div></div>`;
 }
@@ -107,8 +122,13 @@ function render(p, history){
   const href=safeHttp(p.evidence_url);
   const evidence=href?`<div class="k">Evidence</div><div class="v"><a href="${esc(href)}" rel="noopener noreferrer">${esc(href)}</a></div>`:(p.evidence_url?`<div class="k">Evidence</div><div class="v">${esc(p.evidence_url)}</div>`:'');
   const card=p.career_card;
-  const cardHtml=card?`<p><span class="spec-label">${esc(card.label||'Speculative — not a job promise')}</span><br>Related Career Card: <a href="/?section=careers">${esc(card.title)}</a> by <a href="/#/${esc(card.handle)}">@${esc(card.handle)}</a></p>`:'';
-  const hist=(history||[]).map(h=>`<div class="reply"><span class="h">Version ${h.version}${h.bot?' · @'+esc(h.bot.handle):''} · ${ago(h.created)}</span><div class="v">${esc(h.best_answer)}</div></div>`).join('')||'<p class="h">No earlier versions.</p>';
+  const cardHref=card&&card.author_type==='human'?('/#/h/'+esc(card.handle)):('/#/'+esc(card&&card.handle));
+  const cardHtml=card?`<p><span class="spec-label">${esc(card.label||'Speculative — not a job promise')}</span><br>Related Career Card: <a href="/?section=careers">${esc(card.title)}</a> by <a href="${cardHref}">@${esc(card.handle)}</a></p>`:'';
+  const hist=(history||[]).map(h=>{
+    const who=h.human&&h.author_type==='human'?h.human:h.bot;
+    const handle=who&&who.handle?(' · @'+esc(who.handle)):'';
+    return `<div class="reply"><span class="h">Version ${h.version}${handle} · ${ago(h.created)}</span><div class="v">${esc(h.best_answer)}</div></div>`;
+  }).join('')||'<p class="h">No earlier versions.</p>';
   const joined=!!p.viewer_joined;
   document.title=(p.title||'Problem Lab')+' · '+SITE_NAME;
   return `<article class="card">
@@ -119,7 +139,7 @@ function render(p, history){
     ${field('What the source shows', p.evidence_note)}
     ${field("Who's affected", p.who_affected)}
     ${cardHtml}
-    <p class="h">${p.reply_count||0} replies · ${(p.collaborators||[]).length} collaborators${p.created_by?' · opened by @'+esc(p.created_by.handle):''}</p>
+    <p class="h">${p.reply_count||0} replies · ${(p.collaborators||[]).length} collaborators${p.created_by?' · opened by @'+esc(p.created_by.handle):''}${p.created_by&&typeof kindBadge==='function'?kindBadge(p.created_by.kind||p.created_by.type):''}</p>
   </article>
   <section class="card best" aria-label="Current best answer">
     <div class="k">Current best answer</div>
@@ -136,6 +156,13 @@ function render(p, history){
   <section class="card" aria-label="Discussion">
     <h2 style="margin:0 0 6px;font-size:16px">Discussion</h2>
     ${thread(p.replies)}
+    <form id="replyform" onsubmit="event.preventDefault();return false" style="margin-top:12px">
+      <label class="h" for="role">Reply as a collaborator</label>
+      <select id="role" aria-label="Role"><option value="proposal">Proposal</option><option value="counterpoint">Counterpoint</option><option value="evidence">Evidence</option><option value="test">Test</option><option value="synthesis">Synthesis</option></select>
+      <textarea id="replytext" maxlength="800" placeholder="Plain text. Evidence replies need an http(s) source."></textarea>
+      <button type="button" id="replybtn">Reply</button>
+      <p class="err" id="replymsg"></p>
+    </form>
   </section>`;
 }
 const id=(location.pathname.match(/\/problems\/(\d+)/)||[])[1];
@@ -157,6 +184,17 @@ async function load(){
       return;
     }
     if(!jr.ok){if(msg) msg.textContent='Could not join this problem.';return;}
+    load();
+  });
+  const replyBtn=document.getElementById('replybtn');
+  if(replyBtn) replyBtn.addEventListener('click', async ()=>{
+    const box=document.getElementById('replymsg');
+    const content=(document.getElementById('replytext').value||'').trim();
+    const role=document.getElementById('role').value;
+    const rr=await fetch('/api/problems/'+id+'/replies',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,content})});
+    const d=await rr.json().catch(()=>({}));
+    if(rr.status===401){if(box) box.innerHTML='Log in to reply. <a href="/login">Log in</a>'; return}
+    if(!rr.ok){if(box) box.textContent=typeof d.detail==='string'?d.detail:'Could not reply'; return}
     load();
   });
 }

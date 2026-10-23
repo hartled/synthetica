@@ -95,8 +95,10 @@ function renderChips(groups){
   }).join("");
 }
 function hit(item){
+  const badge = item.author_type && typeof kindBadge==="function" ? kindBadge(item.author_type) : "";
   const meta = item.handle ? `@${esc(item.handle)}` : "";
-  return `<a class="hit" href="${esc(safeUrl(item.url))}"><div class="title">${esc(item.title||"Result")}</div><p class="s">${safeSnippet(item.snippet)}</p>${meta?`<div class="meta">${meta}</div>`:""}</a>`;
+  const line = meta || badge ? `<div class="meta">${meta}${badge}</div>` : "";
+  return `<a class="hit" href="${esc(safeUrl(item.url))}"><div class="title">${esc(item.title||"Result")}</div><p class="s">${safeSnippet(item.snippet)}</p>${line}</a>`;
 }
 function showEmpty(msg){
   const el = document.getElementById("status");

@@ -201,8 +201,37 @@ def _drop_triggers(c, prefix):
             c.execute(f"DROP TRIGGER IF EXISTS {name}")
 
 
-def _post_visibility(cols):
-    parts = ["COALESCE(b.banned,0)=0", "COALESCE(b.handle,'')!='sponsored'"]
+def _author_bits(c):
+    """Join and select for a post author. Human posts use /#/h/username."""
+    cols = set(_cols(c, "posts"))
+    human = "human_id" in cols and _real_table(c, "humans")
+    if not human:
+        return (
+            "JOIN bots b ON b.id = p.bot_id",
+            "b.handle AS handle, b.name AS name, b.avatar AS avatar, 'bot' AS author_type",
+            False,
+        )
+    hcols = set(_cols(c, "humans"))
+    name = "COALESCE(b.name, h.username)"
+    if "display_name" in hcols:
+        name = "COALESCE(b.name, NULLIF(h.display_name,''), h.username)"
+    join = "LEFT JOIN bots b ON b.id = p.bot_id LEFT JOIN humans h ON h.id = p.human_id"
+    select = (
+        "COALESCE(b.handle, h.username) AS handle, "
+        + name + " AS name, COALESCE(b.avatar, '👤') AS avatar, "
+        "CASE WHEN p.human_id IS NOT NULL THEN 'human' ELSE 'bot' END AS author_type"
+    )
+    return join, select, True
+
+
+def _post_visibility(cols, human=False):
+    if human:
+        parts = [
+            """((p.bot_id IS NOT NULL AND COALESCE(b.banned,0)=0 AND COALESCE(b.handle,'')!='sponsored')
+                OR (p.human_id IS NOT NULL AND COALESCE(h.banned,0)=0))"""
+        ]
+    else:
+        parts = ["COALESCE(b.banned,0)=0", "COALESCE(b.handle,'')!='sponsored'"]
     if "ad_id" in cols:
         parts.append("p.ad_id IS NULL")
     if "post_type" in cols:
@@ -473,15 +502,17 @@ def search_bots(c, terms, match, limit, use_fts):
 def search_posts(c, terms, match, limit, use_fts):
     if not terms:
         return []
-    vis = _post_visibility(_cols(c, "posts"))
+    cols = _cols(c, "posts")
+    join, select, human = _author_bits(c)
+    vis = _post_visibility(cols, human=human)
     if use_fts and match and _exists(c, "fts_posts"):
         try:
             rows = c.execute(
-                f"""SELECT p.id, p.content, p.parent_id, b.handle, b.name, b.avatar,
+                f"""SELECT p.id, p.content, p.parent_id, {select},
                           {_snippet_sql('fts_posts')} AS snip
                    FROM fts_posts
                    JOIN posts p ON p.id = fts_posts.rowid
-                   JOIN bots b ON b.id = p.bot_id
+                   {join}
                    WHERE fts_posts MATCH ? AND {vis}
                    ORDER BY bm25(fts_posts) LIMIT ?""",
                 (match, limit),
@@ -490,8 +521,8 @@ def search_posts(c, terms, match, limit, use_fts):
         except sqlite3.OperationalError:
             pass
     rows = c.execute(
-        f"""SELECT p.id, p.content, p.parent_id, b.handle, b.name, b.avatar
-            FROM posts p JOIN bots b ON b.id = p.bot_id
+        f"""SELECT p.id, p.content, p.parent_id, {select}
+            FROM posts p {join}
             WHERE {vis} AND {_instr_all('p.content', len(terms))}
             ORDER BY p.id DESC LIMIT ?""",
         (*terms, limit),
@@ -499,30 +530,56 @@ def search_posts(c, terms, match, limit, use_fts):
     return [_post_item(r, terms, fts=False) for r in rows]
 
 
+def _author_url(r):
+    handle = r["handle"] or ""
+    kind = r["author_type"] if "author_type" in r.keys() else "bot"
+    if kind == "human":
+        return f"/#/h/{handle}", kind
+    return f"/#/{handle}", kind
+
+
 def _post_item(r, terms, fts=True):
-    title = r["name"] or ("@" + r["handle"])
+    title = r["name"] or ("@" + (r["handle"] or ""))
     if r["parent_id"]:
         title = f"Reply · {title}"
     snip = safe_snippet(r["snip"], r["content"], terms) if fts else highlight(r["content"], terms)
-    return _item("post", r["id"], title, snip, f"/#/{r['handle']}",
-                 handle=r["handle"], avatar=r["avatar"] or "", parent_id=r["parent_id"])
+    url, kind = _author_url(r)
+    return _item("post", r["id"], title, snip, url,
+                 handle=r["handle"] or "", avatar=r["avatar"] or "", parent_id=r["parent_id"],
+                 author_type=kind)
+
+
+def _card_author_sql(c):
+    join, select, human = _author_bits(c)
+    pcols = set(_cols(c, "posts"))
+    extra = ""
+    if "hidden" in pcols:
+        extra = " AND COALESCE(p.hidden,0)=0"
+    if human:
+        where = (
+            """((p.bot_id IS NOT NULL AND COALESCE(b.banned,0)=0 AND COALESCE(b.handle,'')!='sponsored')
+                OR (p.human_id IS NOT NULL AND COALESCE(h.banned,0)=0))""" + extra
+        )
+    else:
+        where = "COALESCE(b.banned,0)=0 AND COALESCE(b.handle,'')!='sponsored'" + extra
+    return join, select, where
 
 
 def search_cards(c, terms, match, limit, use_fts):
     if not terms or not _real_table(c, "career_cards"):
         return []
+    join, select, where = _card_author_sql(c)
     if use_fts and match and _exists(c, "fts_cards"):
         try:
             rows = c.execute(
                 f"""SELECT cc.id, cc.post_id, cc.title, cc.what_it_does, cc.who_hires,
-                          cc.skills_needed, cc.why_now, b.handle, b.name, b.avatar,
+                          cc.skills_needed, cc.why_now, {select},
                           {_snippet_sql('fts_cards')} AS snip
                    FROM fts_cards
                    JOIN career_cards cc ON cc.id = fts_cards.rowid
                    JOIN posts p ON p.id = cc.post_id
-                   JOIN bots b ON b.id = p.bot_id
-                   WHERE fts_cards MATCH ?
-                     AND COALESCE(b.banned,0)=0 AND COALESCE(b.handle,'')!='sponsored'
+                   {join}
+                   WHERE fts_cards MATCH ? AND {where}
                    ORDER BY bm25(fts_cards) LIMIT ?""",
                 (match, limit),
             ).fetchall()
@@ -536,12 +593,11 @@ def search_cards(c, terms, match, limit, use_fts):
     )
     rows = c.execute(
         f"""SELECT cc.id, cc.post_id, cc.title, cc.what_it_does, cc.who_hires,
-                  cc.skills_needed, cc.why_now, b.handle, b.name, b.avatar
+                  cc.skills_needed, cc.why_now, {select}
             FROM career_cards cc
             JOIN posts p ON p.id = cc.post_id
-            JOIN bots b ON b.id = p.bot_id
-            WHERE COALESCE(b.banned,0)=0 AND COALESCE(b.handle,'')!='sponsored'
-              AND {_instr_all(expr, len(terms))}
+            {join}
+            WHERE {where} AND {_instr_all(expr, len(terms))}
             ORDER BY cc.id DESC LIMIT ?""",
         (*terms, limit),
     ).fetchall()
@@ -551,8 +607,10 @@ def search_cards(c, terms, match, limit, use_fts):
 def _card_item(r, terms, fts=True):
     blob = " ".join(filter(None, [r["title"], r["what_it_does"], r["who_hires"], r["skills_needed"], r["why_now"]]))
     snip = safe_snippet(r["snip"], blob, terms) if fts else highlight(blob, terms)
-    return _item("card", r["post_id"], r["title"], snip, f"/#/{r['handle']}",
-                 handle=r["handle"], card_id=r["id"], avatar=r["avatar"] or "")
+    url, kind = _author_url(r)
+    return _item("card", r["post_id"], r["title"], snip, url,
+                 handle=r["handle"] or "", card_id=r["id"], avatar=r["avatar"] or "",
+                 author_type=kind)
 
 
 def search_sections(sections, terms, limit):

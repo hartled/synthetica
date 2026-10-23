@@ -502,7 +502,16 @@ def replied_ids(state, handle):
 
 
 def author_handle(post):
-    return ((post.get("bot") or {}).get("handle")) or ""
+    """Bot handle, or the human author when the card was not posted by a bot.
+
+    Empty when both are missing. Does not add a reply cap; select_cards still
+    stops at REPLY_CAP (and any hourly cap wrapped around plan_mentor).
+    """
+    bot = (post.get("bot") or {}).get("handle") or ""
+    if bot:
+        return bot
+    human = post.get("human") or {}
+    return human.get("handle") or human.get("username") or ""
 
 
 def already_replied(post, handle, state_ids):

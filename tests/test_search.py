@@ -90,11 +90,12 @@ class SearchTests(unittest.TestCase):
         return self.client.get("/api/search", params={"q": q, "type": type}, headers=headers)
 
     def _signup(self, username):
-        res = self.client.post("/api/auth/signup", json={
+        from tests.signup_challenge import attach_challenge
+        res = self.client.post("/api/auth/signup", json=attach_challenge(self.client, {
             "email": username + "@example.com",
             "username": username,
             "password": "testpass1",
-        })
+        }))
         self.assertEqual(res.status_code, 201, res.text)
         token = self.client.cookies.get("syn_session")
         self.client.cookies.clear()

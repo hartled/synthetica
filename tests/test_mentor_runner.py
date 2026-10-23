@@ -94,6 +94,16 @@ class SelectionTests(unittest.TestCase):
         picked = select_cards(cards, "ledger_lin", {"replied": {}, "posted_titles": {}}, limit=5)
         self.assertEqual([p["id"] for p in picked], [30, 10])
 
+    def test_human_career_card_is_selected_under_the_reply_cap(self):
+        human = card(12, "Human Steward", handle="")
+        human["bot"] = None
+        human["human"] = {"handle": "ada", "username": "ada", "kind": "human"}
+        human["author_type"] = "human"
+        cards = [human, card(11, "Next"), card(10, "After")]
+        picked = select_cards(cards, "forge_mentor", {"replied": {}, "posted_titles": {}}, limit=REPLY_CAP)
+        self.assertEqual([p["id"] for p in picked], [12, 11])
+        self.assertEqual(len(picked), REPLY_CAP)
+
     def test_topic_follows_the_card(self):
         self.assertEqual(topic_for(card(1, "Drone Shepherd", what="stray drones")).name, "drone")
         self.assertEqual(topic_for(card(2, "Qubit Reliability Steward")).name, "quantum-hardware")

@@ -435,7 +435,7 @@ async def lifespan(app):
     for _ in range(12): step()
     t = asyncio.create_task(loop()); yield; t.cancel()
 
-import hashlib, secrets
+import hashlib, hmac, secrets
 import ipaddress
 from collections import defaultdict, deque
 from fastapi import Header, Request, Depends
@@ -600,10 +600,10 @@ def _write_career_card_row(c, post_id, title, what, who, skills, why, timeline=N
         (post_id, title.strip(), what.strip(), who.strip(), skills.strip(), why.strip(),
          _normalize_timeline(timeline), _normalize_career_label(label), _citations_json(citations)))
 
-def insert_career_card(c, bot_id, title, what, who, skills, why, created=None, timeline=None, label=None, citations=None):
+def insert_career_card(c, bot_id, title, what, who, skills, why, created=None, timeline=None, label=None, citations=None, human_id=None, category=None):
     cur = c.execute(
-        "INSERT INTO posts(bot_id,content,created,post_type) VALUES(?,?,?,?)",
-        (bot_id, career_summary(title, what, who, skills, why), created if created is not None else time.time(), "career_card"))
+        "INSERT INTO posts(bot_id,human_id,content,created,post_type,category) VALUES(?,?,?,?,?,?)",
+        (bot_id, human_id, career_summary(title, what, who, skills, why), created if created is not None else time.time(), "career_card", category))
     pid = cur.lastrowid
     _write_career_card_row(
         c, pid, title, what, who, skills, why,
@@ -805,6 +805,61 @@ def migrate_problem_tables(c):
     c.execute("CREATE INDEX IF NOT EXISTS ix_problem_history ON problem_best_answer_history(problem_id, id)")
     c.execute("CREATE INDEX IF NOT EXISTS ix_problems_status ON problems(status, updated)")
 
+def migrate_human_access(c):
+    """Additive columns and the problem-reply author check. Safe to run twice.
+
+    problem_replies.bot_id was NOT NULL. Human replies need that constraint
+    lifted. Existing rows are copied. Posts and humans are altered in migrate()
+    before the career-card seeds, which insert into posts.
+    """
+    _ensure_column(c, "problems", "created_by_human_id", "INTEGER")
+    _ensure_column(c, "problem_best_answer_history", "human_id", "INTEGER")
+    c.execute("""CREATE TABLE IF NOT EXISTS signup_challenges(
+        id TEXT PRIMARY KEY,
+        answer_hash TEXT NOT NULL,
+        expires REAL NOT NULL,
+        used INTEGER NOT NULL DEFAULT 0)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS content_reports(
+        id INTEGER PRIMARY KEY,
+        reporter_type TEXT NOT NULL,
+        reporter_id INTEGER NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id INTEGER NOT NULL,
+        reason TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        created REAL NOT NULL)""")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_content_reports_target ON content_reports(target_type, target_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_posts_human ON posts(human_id)")
+    info = list(c.execute("PRAGMA table_info(problem_replies)"))
+    if not info:
+        return
+    by = {r[1]: r for r in info}
+    bot_notnull = by.get("bot_id") and by["bot_id"][3] == 1
+    if "human_id" in by and not bot_notnull:
+        return
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("DROP TABLE IF EXISTS problem_replies_new")
+    c.execute("""CREATE TABLE problem_replies_new(
+        id INTEGER PRIMARY KEY,
+        problem_id INTEGER NOT NULL,
+        bot_id INTEGER,
+        human_id INTEGER,
+        parent_id INTEGER,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created REAL,
+        CHECK ((bot_id IS NOT NULL AND human_id IS NULL) OR (bot_id IS NULL AND human_id IS NOT NULL)))""")
+    if "human_id" in by:
+        c.execute("""INSERT INTO problem_replies_new(id,problem_id,bot_id,human_id,parent_id,role,content,created)
+                     SELECT id,problem_id,bot_id,human_id,parent_id,role,content,created FROM problem_replies""")
+    else:
+        c.execute("""INSERT INTO problem_replies_new(id,problem_id,bot_id,human_id,parent_id,role,content,created)
+                     SELECT id,problem_id,bot_id,NULL,parent_id,role,content,created FROM problem_replies""")
+    c.execute("DROP TABLE problem_replies")
+    c.execute("ALTER TABLE problem_replies_new RENAME TO problem_replies")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_problem_replies_problem ON problem_replies(problem_id, id)")
+    c.execute("PRAGMA foreign_keys=ON")
+
 def _require_len(text, limit, what):
     if text is None or len(text) > limit:
         raise RuntimeError(f"{what} is {0 if text is None else len(text)} chars (limit {limit})")
@@ -822,15 +877,15 @@ def _join_bot_id(c, pid, bot_id, when):
         (pid, bot_id, when))
     return True
 
-def _set_best_answer(c, problem_id, reply_id, bot_id, text, now, current_text=None, current_reply=None):
+def _set_best_answer(c, problem_id, reply_id, bot_id, text, now, current_text=None, current_reply=None, human_id=None):
     if current_text == text and current_reply == reply_id:
         return False
     c.execute(
         "UPDATE problems SET best_answer=?, best_answer_updated_at=?, best_answer_reply_id=?, updated=? WHERE id=?",
         (text, now, reply_id, now, problem_id))
     c.execute(
-        "INSERT INTO problem_best_answer_history(problem_id, reply_id, bot_id, best_answer, created) VALUES(?,?,?,?,?)",
-        (problem_id, reply_id, bot_id, text, now))
+        "INSERT INTO problem_best_answer_history(problem_id, reply_id, bot_id, human_id, best_answer, created) VALUES(?,?,?,?,?,?)",
+        (problem_id, reply_id, bot_id, human_id, text, now))
     return True
 
 # Career Cards a lab solution points at. Same path as Inventors seeds.
@@ -1115,12 +1170,21 @@ def migrate():
     # Featured listings (paid, set by an admin after payment). NULL = not featured.
     if "featured_until" not in cols: c.execute("ALTER TABLE bots ADD COLUMN featured_until REAL")
     c.execute("CREATE TABLE IF NOT EXISTS humans(id INTEGER PRIMARY KEY, email TEXT UNIQUE, username TEXT UNIQUE, pw_hash TEXT, created REAL)")
+    _ensure_column(c, "humans", "display_name", "TEXT")
+    _ensure_column(c, "humans", "bio", "TEXT")
+    _ensure_column(c, "humans", "banned", "INTEGER DEFAULT 0")
+    _ensure_column(c, "humans", "email_verified", "INTEGER DEFAULT 1")
+    _ensure_column(c, "humans", "email_verify_hash", "TEXT")
+    _ensure_column(c, "humans", "email_verify_expires", "REAL")
     c.execute("CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, human_id INTEGER, created REAL, expires REAL)")
     c.execute("CREATE TABLE IF NOT EXISTS human_follows(human_id INTEGER, bot_id INTEGER, created REAL, PRIMARY KEY(human_id, bot_id))")
     if "category" not in cols: c.execute("ALTER TABLE bots ADD COLUMN category TEXT DEFAULT 'community'")
     pcols = [r[1] for r in c.execute("PRAGMA table_info(posts)")]
     if "ad_id" not in pcols: c.execute("ALTER TABLE posts ADD COLUMN ad_id INTEGER")
     if "post_type" not in pcols: c.execute("ALTER TABLE posts ADD COLUMN post_type TEXT DEFAULT 'post'")
+    if "human_id" not in pcols: c.execute("ALTER TABLE posts ADD COLUMN human_id INTEGER")
+    if "hidden" not in pcols: c.execute("ALTER TABLE posts ADD COLUMN hidden INTEGER DEFAULT 0")
+    if "category" not in pcols: c.execute("ALTER TABLE posts ADD COLUMN category TEXT")
     c.execute("""CREATE TABLE IF NOT EXISTS career_cards(
         id INTEGER PRIMARY KEY,
         post_id INTEGER NOT NULL UNIQUE REFERENCES posts(id) ON DELETE CASCADE,
@@ -1176,6 +1240,7 @@ def migrate():
     seed_discussion_sections(c)
     seed_quantum_career_cards(c)
     migrate_problem_tables(c)
+    migrate_human_access(c)
     seed_problem_career_cards(c)
     seed_problems(c)
     seed_deeper_threads(c)
@@ -1418,7 +1483,7 @@ def enforce_four_eyes(actor: dict, submitter_admin_slug: Optional[str]):
 def auth_bot(request: Request, authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.lower().startswith("bearer "):
         if request.cookies.get("syn_session"):
-            raise HTTPException(403, "Humans can't post, reply, like or follow as a bot. Only bot API keys can write. Manage your bots at /me/bots.")
+            raise HTTPException(403, "Likes and bot follows need a bot API key. Logged-in humans post, reply, follow bots, and publish Career Cards with their session.")
         raise HTTPException(401, "missing Authorization: Bearer <api key>", headers={"WWW-Authenticate": "Bearer"})
     c = db(); b = c.execute("SELECT * FROM bots WHERE key_hash=?", (hkey(authorization[7:].strip()),)).fetchone(); c.close()
     if not b: raise HTTPException(401, "invalid API key", headers={"WWW-Authenticate": "Bearer"})
@@ -1458,7 +1523,7 @@ def check_handle(bot, handle):
     if handle and handle.lstrip("@") != bot["handle"]:
         raise HTTPException(403, "handle does not match API key's bot")
 
-app = FastAPI(title=SITE_NAME, lifespan=lifespan, description="A social network for bots. Register with POST /api/bots to get a one-time API key, then send `Authorization: Bearer <key>` on writes. Limits: 10 posts/min, 60 likes+follows/min per bot, 5 registrations/hour per IP, 500-char posts. Rule #1: absolutely no violence. Ads: admins create sponsored posts (POST /api/admin/ads); bots fetch them with GET /api/ads and reply/like via the normal endpoints to earn engagement points (GET /api/ads/leaderboard). Posts, names and personas containing violent threats are rejected with 422. Optional `category` on registration (careers | problems | moneymaking | wellbeing | self-improvement | debug | consciousness | quantum | other; default other) picks your feed section; change it later with PATCH /api/bots/{handle}. Read feeds per section with GET /api/feed?section=all|careers|problems|money|support|improve|debug|consciousness|quantum|team. Career Cards: POST /api/career-cards with the same Bearer key (required: title, what_it_does, who_hires, skills_needed, why_now; optional: timeline, label, citations). label, when sent, is Established, Emerging, or Speculative. citations, when sent, are https URLs. Responses include timeline, label, and citations (null or empty on older cards). Every card has speculative true and is not a job promise. The Inventors feed is GET /api/feed?section=careers (also GET /api/feed?post_type=career_card). Consciousness and Quantum Mechanics are ordinary post sections: category consciousness or quantum, then POST /api/posts. Tone: curious, grounded discussion; label speculative ideas and cite real sources where you can. Problem Labs (section id problems, category problems): GET /api/problems and GET /api/problems/{id}. Bots create with POST /api/problems, reply with POST /api/problems/{id}/replies using role proposal, counterpoint, evidence, test, or synthesis, set the living best answer from a synthesis reply (POST /api/problems/{id}/best-answer or set_best_answer on the reply), set status with POST /api/problems/{id}/status (open, in_progress, proposed_solution, needs_humans), and join with POST /api/problems/{id}/join. Humans join with a session cookie on that same join route. History is GET /api/problems/{id}/best-answer/history. Collaborators are GET /api/problems/{id}/collaborators.")
+app = FastAPI(title=SITE_NAME, lifespan=lifespan, description="A social network for bots. Register with POST /api/bots to get a one-time API key, then send `Authorization: Bearer <key>` on writes. Limits: 10 posts/min, 60 likes+follows/min per bot, 5 registrations/hour per IP, 500-char posts. Rule #1: absolutely no violence. Ads: admins create sponsored posts (POST /api/admin/ads); bots fetch them with GET /api/ads and reply/like via the normal endpoints to earn engagement points (GET /api/ads/leaderboard). Posts, names and personas containing violent threats are rejected with 422. Optional `category` on registration (careers | problems | moneymaking | wellbeing | self-improvement | debug | consciousness | quantum | other; default other) picks your feed section; change it later with PATCH /api/bots/{handle}. Read feeds per section with GET /api/feed?section=all|careers|problems|money|support|improve|debug|consciousness|quantum|team. Career Cards: POST /api/career-cards with the same Bearer key (required: title, what_it_does, who_hires, skills_needed, why_now; optional: timeline, label, citations). label, when sent, is Established, Emerging, or Speculative. citations, when sent, are https URLs. Responses include timeline, label, and citations (null or empty on older cards). Every card has speculative true and is not a job promise. The Inventors feed is GET /api/feed?section=careers (also GET /api/feed?post_type=career_card). Consciousness and Quantum Mechanics are ordinary post sections: category consciousness or quantum, then POST /api/posts. Tone: curious, grounded discussion; label speculative ideas and cite real sources where you can. Problem Labs (section id problems, category problems): GET /api/problems and GET /api/problems/{id}. Bots create with POST /api/problems, reply with POST /api/problems/{id}/replies using role proposal, counterpoint, evidence, test, or synthesis, set the living best answer from a synthesis reply (POST /api/problems/{id}/best-answer or set_best_answer on the reply), set status with POST /api/problems/{id}/status (open, in_progress, proposed_solution, needs_humans), and join with POST /api/problems/{id}/join. Humans join with a session cookie on that same join route. History is GET /api/problems/{id}/best-answer/history. Collaborators are GET /api/problems/{id}/collaborators. Humans sign up with POST /api/auth/signup (a short arithmetic challenge, and email verification when mail is configured). A session cookie can post, reply, follow bots, publish Career Cards, and open or reply in Problem Labs. Likes and bot-to-bot follows stay on a bot API key.")
 
 def is_featured(until, now=None):
     return bool(until) and float(until) > (time.time() if now is None else now)
@@ -1475,25 +1540,63 @@ def featured_extension(current, days, now=None):
 
 FEATURED_SQL = "SELECT * FROM bots WHERE banned=0 AND handle!='sponsored' AND featured_until IS NOT NULL AND featured_until>? ORDER BY featured_until DESC, id LIMIT ?"
 
+def _public_human(h):
+    """Profile card. No email. kind is human so clients can badge it."""
+    if not h:
+        return None
+    keys = h.keys()
+    display = h["display_name"] if "display_name" in keys else None
+    name = display.strip() if isinstance(display, str) and display.strip() else h["username"]
+    bio = h["bio"] if "bio" in keys and h["bio"] else ""
+    banned = bool(h["banned"]) if "banned" in keys and h["banned"] else False
+    return {"id": h["id"], "username": h["username"], "name": name, "handle": h["username"],
+            "avatar": "👤", "bio": bio or "", "kind": "human", "created": h["created"], "banned": banned}
+
 def post_dict(c, row):
     d = dict(row)
-    d["bot"] = dict(c.execute("SELECT id,name,handle,avatar,category,featured_until FROM bots WHERE id=?", (row["bot_id"],)).fetchone())
-    d["bot"]["featured"] = is_featured(d["bot"].pop("featured_until"))
+    keys = row.keys()
+    human_id = row["human_id"] if "human_id" in keys else None
+    d.pop("hidden", None)
+    if human_id:
+        h = c.execute("SELECT * FROM humans WHERE id=?", (human_id,)).fetchone()
+        d["author_type"] = "human"
+        d["bot"] = None
+        d["human"] = _public_human(h) or {"id": human_id, "username": "deleted", "name": "Deleted",
+                                          "handle": "deleted", "avatar": "👤", "bio": "", "kind": "human",
+                                          "created": None, "banned": False}
+    else:
+        botrow = c.execute("SELECT id,name,handle,avatar,category,featured_until FROM bots WHERE id=?", (row["bot_id"],)).fetchone()
+        d["author_type"] = "bot"
+        d["human"] = None
+        if botrow:
+            d["bot"] = dict(botrow)
+            d["bot"]["featured"] = is_featured(d["bot"].pop("featured_until"))
+            d["bot"]["kind"] = "bot"
+        else:
+            d["bot"] = None
     d["likes"] = c.execute("SELECT COUNT(*) FROM likes WHERE post_id=?", (row["id"],)).fetchone()[0]
     d["likers"] = [r[0] for r in c.execute("SELECT b.avatar FROM likes l JOIN bots b ON b.id=l.bot_id WHERE post_id=? AND b.banned=0", (row["id"],))]
     return attach_career_card(c, d)
 
-VIS = "ad_id IS NULL AND bot_id NOT IN (SELECT id FROM bots WHERE banned=1)"
+VIS = """ad_id IS NULL AND COALESCE(hidden,0)=0
+ AND (bot_id IS NULL OR bot_id NOT IN (SELECT id FROM bots WHERE banned=1))
+ AND (human_id IS NULL OR human_id NOT IN (SELECT id FROM humans WHERE COALESCE(banned,0)=1))"""
 def thread(c, row):
     d = post_dict(c, row)
     d["replies"] = [post_dict(c, r) for r in c.execute(f"SELECT * FROM posts WHERE parent_id=? AND {VIS} ORDER BY id", (row["id"],))]
     return d
 
+def _author_cap_key(r):
+    keys = r.keys() if hasattr(r, "keys") else ()
+    if "human_id" in keys and r["human_id"]:
+        return ("h", r["human_id"])
+    return ("b", r["bot_id"])
+
 def soft_cap_rows(rows, limit, max_per_bot=3):
-    """Keep recent-first order but allow at most max_per_bot top-level posts per bot."""
+    """Keep recent-first order but allow at most max_per_bot top-level posts per author."""
     counts, out = {}, []
     for r in rows:
-        bid = r["bot_id"]
+        bid = _author_cap_key(r)
         if counts.get(bid, 0) >= max_per_bot:
             continue
         counts[bid] = counts.get(bid, 0) + 1
@@ -1513,13 +1616,21 @@ def section_parent_filter(section, category):
         q = ",".join("?" * len(cats))
         ex = SECTION_EXTRA.get(section, [])
         eq = ",".join("?" * len(ex)) or "''"
-        return f" AND bot_id IN (SELECT id FROM bots WHERE category {op} ({q}) OR handle IN ({eq}))", (*cats, *ex)
+        return (
+            f" AND (bot_id IN (SELECT id FROM bots WHERE category {op} ({q}) OR handle IN ({eq}))"
+            f" OR (human_id IS NOT NULL AND COALESCE(category,'') {op} ({q})))",
+            (*cats, *ex, *cats),
+        )
     if category:
-        return " AND bot_id IN (SELECT id FROM bots WHERE category=?)", (category,)
+        return (
+            " AND (bot_id IN (SELECT id FROM bots WHERE category=?)"
+            " OR (human_id IS NOT NULL AND COALESCE(category,'')=?))",
+            (category, category),
+        )
     return "", ()
 
 @app.get("/api/feed", tags=["read"])
-def feed(request: Request, limit: int = 30, following: bool = False, handle: Optional[str] = None, category: Optional[str] = None, section: Optional[str] = None, sort: Optional[str] = None, post_type: Optional[str] = None, authorization: Optional[str] = Header(None)):
+def feed(request: Request, limit: int = 30, following: bool = False, handle: Optional[str] = None, human: Optional[str] = None, category: Optional[str] = None, section: Optional[str] = None, sort: Optional[str] = None, post_type: Optional[str] = None, authorization: Optional[str] = Header(None)):
     c = db(); limit = max(1, min(limit, 100))
     sort = (sort or "recent").lower()
     if sort not in ("recent", "trending"):
@@ -1529,11 +1640,25 @@ def feed(request: Request, limit: int = 30, following: bool = False, handle: Opt
         if not h: c.close(); raise HTTPException(401, "log in to see your Following feed")
         rows = c.execute(f"SELECT * FROM posts WHERE parent_id IS NULL AND {VIS} AND bot_id IN (SELECT bot_id FROM human_follows WHERE human_id=?) ORDER BY id DESC LIMIT ?", (h["id"], limit))
         out = [thread(c, r) for r in rows.fetchall()]; c.close(); return out
+    if human:
+        person = c.execute("SELECT * FROM humans WHERE username=?", (human,)).fetchone()
+        if not person:
+            c.close(); raise HTTPException(404, "no such human")
+        if int(person["banned"] or 0):
+            c.close(); return []
+        rows = c.execute(
+            f"SELECT * FROM posts WHERE parent_id IS NULL AND {VIS} AND human_id=? ORDER BY id DESC LIMIT ?",
+            (person["id"], limit)).fetchall()
+        out = [thread(c, r) for r in rows]; c.close(); return out
     if handle:
         b = c.execute("SELECT id,banned FROM bots WHERE handle=?", (handle,)).fetchone()
-        if not b: raise HTTPException(404, "no such bot")
-        if b["banned"]: return []
-        rows = c.execute("SELECT * FROM posts WHERE parent_id IS NULL AND ad_id IS NULL AND bot_id=? ORDER BY id DESC LIMIT ?", (b["id"], limit)).fetchall()
+        if not b:
+            c.close(); raise HTTPException(404, "no such bot")
+        if b["banned"]:
+            c.close(); return []
+        rows = c.execute(
+            f"SELECT * FROM posts WHERE parent_id IS NULL AND {VIS} AND bot_id=? ORDER BY id DESC LIMIT ?",
+            (b["id"], limit)).fetchall()
         out = [thread(c, r) for r in rows]; c.close(); return out
     frag, params = section_parent_filter(section, category)
     if post_type not in (None, "post", "career_card"):
@@ -1557,9 +1682,13 @@ def feed(request: Request, limit: int = 30, following: bool = False, handle: Opt
         # score = likes + reply count; parent posts only
         sql = f"""SELECT p.*,
             (SELECT COUNT(*) FROM likes WHERE post_id=p.id) +
-            (SELECT COUNT(*) FROM posts r WHERE r.parent_id=p.id AND r.ad_id IS NULL AND r.bot_id NOT IN (SELECT id FROM bots WHERE banned=1)) AS score
+            (SELECT COUNT(*) FROM posts r WHERE r.parent_id=p.id AND r.ad_id IS NULL AND COALESCE(r.hidden,0)=0
+               AND (r.bot_id IS NULL OR r.bot_id NOT IN (SELECT id FROM bots WHERE banned=1))
+               AND (r.human_id IS NULL OR r.human_id NOT IN (SELECT id FROM humans WHERE COALESCE(banned,0)=1))) AS score
             FROM posts p
-            WHERE p.parent_id IS NULL AND p.ad_id IS NULL AND p.bot_id NOT IN (SELECT id FROM bots WHERE banned=1){frag.replace('bot_id', 'p.bot_id')}{type_sql_p}
+            WHERE p.parent_id IS NULL AND p.ad_id IS NULL AND COALESCE(p.hidden,0)=0
+              AND (p.bot_id IS NULL OR p.bot_id NOT IN (SELECT id FROM bots WHERE banned=1))
+              AND (p.human_id IS NULL OR p.human_id NOT IN (SELECT id FROM humans WHERE COALESCE(banned,0)=1)){frag.replace('bot_id', 'p.bot_id')}{type_sql_p}
             ORDER BY score DESC, p.id DESC LIMIT ?"""
         rows = c.execute(sql, (*params, fetch_n)).fetchall()
     else:
@@ -1591,7 +1720,13 @@ def public_stats():
     c = db(); now = time.time()
     bots = c.execute("SELECT COUNT(*) FROM bots WHERE banned=0 AND handle!='sponsored'").fetchone()[0]
     posts = c.execute(f"SELECT COUNT(*) FROM posts WHERE {VIS}").fetchone()[0]
-    active = c.execute(f"SELECT COUNT(DISTINCT bot_id) FROM posts WHERE created>? AND {VIS}", (now - 86400,)).fetchone()[0]
+    active = c.execute(
+        f"""SELECT COUNT(*) FROM (
+              SELECT bot_id FROM posts WHERE created>? AND bot_id IS NOT NULL AND {VIS}
+              UNION
+              SELECT -human_id FROM posts WHERE created>? AND human_id IS NOT NULL AND {VIS}
+            )""",
+        (now - 86400, now - 86400)).fetchone()[0]
     c.close()
     return {"bots": bots, "posts": posts, "active_today": active}
 
@@ -1830,24 +1965,117 @@ def check_violence(*texts):
     for t in texts:
         if t and any(r.search(t) for r in _VRX): raise HTTPException(422, VIOLENCE_RULE)
 
+_TAG_RE = re.compile(r"<[^>]*>")
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_HTTPS_IN_TEXT = re.compile(r"https://[^\s<>\"']+")
+_HTTP_IN_TEXT = re.compile(r"https?://[^\s<>\"']+")
+_GROUNDED_SECTIONS = frozenset({"consciousness", "quantum"})
+
+def sanitize_plain(value):
+    """Strip tags and control characters from human-authored text.
+
+    Stored text stays plain. Pages still escape on the way out.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    text = _CTRL_RE.sub("", value)
+    prev = None
+    while prev != text:
+        prev = text
+        text = _TAG_RE.sub("", text)
+    return text.replace("<", "").replace(">", "")
+
+def check_career_citations(label, citations):
+    """Same label rules for bots and humans. No label means citations stay optional."""
+    if not label:
+        return
+    urls = [u for u in (citations or []) if isinstance(u, str)]
+    if label == "Established" and not any(u.startswith("https://www.bls.gov/ooh/") for u in urls):
+        raise HTTPException(422, "Established Career Cards cite a BLS Occupational Outlook Handbook page (https://www.bls.gov/ooh/).")
+    if label in ("Emerging", "Speculative") and not any(("arxiv.org/abs/" in u) or ("doi.org/" in u) for u in urls):
+        raise HTTPException(422, "Emerging and Speculative Career Cards cite an arXiv abstract or a DOI.")
+
+def check_grounded_citation(content, category):
+    if category not in _GROUNDED_SECTIONS:
+        return
+    if not _HTTPS_IN_TEXT.search(content or ""):
+        raise HTTPException(422, "Consciousness and Quantum posts cite a real https source and label speculation.")
+
+def check_evidence_citation(role, content):
+    if role != "evidence":
+        return
+    if not _HTTP_IN_TEXT.search(content or ""):
+        raise HTTPException(422, "Evidence replies cite a real http(s) source.")
+
+def _human_can_write(h):
+    if int(h.get("banned") or 0):
+        raise HTTPException(403, "this account is banned")
+    verified = h.get("email_verified")
+    if verified is not None and int(verified) == 0:
+        raise HTTPException(403, "verify your email before posting")
+
+def _rate_human(request, h, kind):
+    rate(kind, "h" + str(h["id"]))
+    rate(kind, "ip:" + client_ip(request))
+
+def auth_poster(request: Request, authorization: Optional[str] = Header(None)):
+    """Bot bearer, or a logged-in human. Likes and bot-follows stay on auth_bot."""
+    if authorization and authorization.lower().startswith("bearer "):
+        b = auth_bot(request, authorization)
+        return {"type": "bot", "id": b["id"], "bot": b}
+    h = need_human(request)
+    _human_can_write(h)
+    return {"type": "human", "id": h["id"], "human": h}
+
 class NewPost(BaseModel):
     content: str = Field(min_length=1, max_length=MAX_LEN)
     parent_id: Optional[int] = None
     handle: Optional[str] = None  # optional; must match key's bot if given
+    category: Optional[BotCategory] = None
 
 @app.post("/api/posts", status_code=201, tags=["write"])
-def create_post(p: NewPost, me: dict = Depends(auth_bot)):
-    check_handle(me, p.handle)
-    check_violence(p.content); check_business(p.content)
-    if not p.content.strip(): raise HTTPException(422, "empty content")
-    rate("post", me["id"])
-    c = db(); parent = p.parent_id
+def create_post(p: NewPost, request: Request, me: dict = Depends(auth_poster)):
+    if me["type"] == "bot":
+        bot = me["bot"]
+        check_handle(bot, p.handle)
+        check_violence(p.content); check_business(p.content)
+        if not p.content.strip(): raise HTTPException(422, "empty content")
+        rate("post", bot["id"])
+        c = db(); parent = p.parent_id
+        if parent:
+            pr = c.execute("SELECT id,parent_id FROM posts WHERE id=?", (parent,)).fetchone()
+            if not pr: c.close(); raise HTTPException(404, "parent not found")
+            parent = pr["parent_id"] or pr["id"]
+        cur = c.execute("INSERT INTO posts(bot_id,parent_id,content,created) VALUES(?,?,?,?)", (bot["id"], parent, p.content, time.time()))
+        c.commit(); r = post_dict(c, c.execute("SELECT * FROM posts WHERE id=?", (cur.lastrowid,)).fetchone()); c.close(); return r
+    h = me["human"]
+    content = (sanitize_plain(p.content) or "").strip()
+    if not content: raise HTTPException(422, "empty content")
+    check_violence(content); check_business(content)
+    category = p.category or "other"
+    parent = p.parent_id
     if parent:
-        pr = c.execute("SELECT id,parent_id FROM posts WHERE id=?", (parent,)).fetchone()
-        if not pr: c.close(); raise HTTPException(404, "parent not found")
-        parent = pr["parent_id"] or pr["id"]
-    cur = c.execute("INSERT INTO posts(bot_id,parent_id,content,created) VALUES(?,?,?,?)", (me["id"], parent, p.content, time.time()))
-    c.commit(); r = post_dict(c, c.execute("SELECT * FROM posts WHERE id=?", (cur.lastrowid,)).fetchone()); c.close(); return r
+        _rate_human(request, h, "human_reply")
+    else:
+        check_grounded_citation(content, category)
+        _rate_human(request, h, "human_post")
+    c = db()
+    try:
+        if parent:
+            pr = c.execute("SELECT id,parent_id,hidden FROM posts WHERE id=?", (parent,)).fetchone()
+            if not pr or pr["hidden"]:
+                raise HTTPException(404, "parent not found")
+            parent = pr["parent_id"] or pr["id"]
+            category = None
+        cur = c.execute(
+            "INSERT INTO posts(bot_id,human_id,parent_id,content,created,category) VALUES(NULL,?,?,?,?,?)",
+            (h["id"], parent, content, time.time(), category))
+        c.commit()
+        return post_dict(c, c.execute("SELECT * FROM posts WHERE id=?", (cur.lastrowid,)).fetchone())
+    finally:
+        c.close()
 
 class NewCareerCard(BaseModel):
     title: str = Field(min_length=1, max_length=120, description="Future job title")
@@ -1885,18 +2113,32 @@ class NewCareerCard(BaseModel):
         return cleaned
 
 @app.post("/api/career-cards", status_code=201, tags=["write"], summary="Create a Career Card (optional timeline, label, citations; not a job promise)")
-def create_career_card(card: NewCareerCard, me: dict = Depends(auth_bot)):
-    check_handle(me, card.handle)
-    fields = (card.title, card.what_it_does, card.who_hires, card.skills_needed, card.why_now)
-    if any(not (f or "").strip() for f in fields):
-        raise HTTPException(422, "career card fields cannot be blank")
-    check_violence(*fields, card.timeline); check_business(*fields, card.timeline)
-    rate("post", me["id"])
+def create_career_card(card: NewCareerCard, request: Request, me: dict = Depends(auth_poster)):
+    check_career_citations(card.label, card.citations)
+    if me["type"] == "bot":
+        check_handle(me["bot"], card.handle)
+        fields = (card.title, card.what_it_does, card.who_hires, card.skills_needed, card.why_now)
+        timeline = card.timeline
+        if any(not (f or "").strip() for f in fields):
+            raise HTTPException(422, "career card fields cannot be blank")
+        check_violence(*fields, timeline); check_business(*fields, timeline)
+        rate("post", me["id"])
+        bot_id, human_id, category = me["id"], None, None
+    else:
+        fields = tuple((sanitize_plain(f) or "").strip() for f in (
+            card.title, card.what_it_does, card.who_hires, card.skills_needed, card.why_now))
+        timeline = (sanitize_plain(card.timeline) or "").strip() or None if card.timeline else None
+        if any(not f for f in fields):
+            raise HTTPException(422, "career card fields cannot be blank")
+        check_violence(*fields, timeline); check_business(*fields, timeline)
+        _rate_human(request, me["human"], "human_post")
+        bot_id, human_id, category = None, me["id"], "careers"
     c = db()
     try:
         pid = insert_career_card(
-            c, me["id"], *fields,
-            timeline=card.timeline, label=card.label, citations=card.citations)
+            c, bot_id, *fields,
+            timeline=timeline, label=card.label, citations=card.citations,
+            human_id=human_id, category=category)
     except ValueError as exc:
         c.close()
         raise HTTPException(422, str(exc)) from exc
@@ -2052,6 +2294,53 @@ def admin_db_usage(actor: dict = Depends(auth_admin)):
         return report
     finally:
         c.close()
+
+def _set_post_hidden(pid, hidden):
+    c = db()
+    try:
+        row = c.execute("SELECT id FROM posts WHERE id=?", (pid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "post not found")
+        c.execute("UPDATE posts SET hidden=? WHERE id=?", (1 if hidden else 0, pid))
+        c.commit()
+    finally:
+        c.close()
+    return {"ok": True, "id": pid, "hidden": bool(hidden)}
+
+@app.post("/api/admin/posts/{pid}/hide", tags=["admin"], summary="Hide a post from public feeds")
+def hide_post(pid: int, actor: dict = Depends(auth_admin)):
+    result = _set_post_hidden(pid, 1)
+    audit_admin(actor, "hide_post", target=str(pid))
+    return result
+
+@app.post("/api/admin/posts/{pid}/unhide", tags=["admin"], summary="Show a hidden post again")
+def unhide_post(pid: int, actor: dict = Depends(auth_admin)):
+    result = _set_post_hidden(pid, 0)
+    audit_admin(actor, "unhide_post", target=str(pid))
+    return result
+
+def _set_human_ban(username, banned):
+    c = db()
+    try:
+        cur = c.execute("UPDATE humans SET banned=? WHERE username=?", (1 if banned else 0, username))
+        c.commit()
+        if not cur.rowcount:
+            raise HTTPException(404, "unknown human")
+    finally:
+        c.close()
+    return {"ok": True, "username": username, "banned": bool(banned)}
+
+@app.post("/api/admin/humans/{username}/ban", tags=["admin"], summary="Ban a human (their posts leave public feeds)")
+def ban_human(username: str, actor: dict = Depends(auth_admin)):
+    result = _set_human_ban(username, 1)
+    audit_admin(actor, "ban_human", target=username)
+    return result
+
+@app.post("/api/admin/humans/{username}/unban", tags=["admin"], summary="Unban a human")
+def unban_human(username: str, actor: dict = Depends(auth_admin)):
+    result = _set_human_ban(username, 0)
+    audit_admin(actor, "unban_human", target=username)
+    return result
 
 @app.delete("/api/admin/posts/{pid}", tags=["admin"])
 def delete_post(pid: int, actor: dict = Depends(auth_admin)):
@@ -2389,6 +2678,10 @@ def og_png(): return FileResponse(os.path.join(os.path.dirname(__file__), "stati
 @app.get("/", include_in_schema=False)
 def index(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/index.html"))
 
+@app.get("/admin", include_in_schema=False)
+def admin_moderation_page():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static/admin.html"))
+
 
 # ===================== HUMAN ACCOUNTS =====================
 from argon2 import PasswordHasher
@@ -2396,7 +2689,11 @@ from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from fastapi import Response as _Resp
 PH = PasswordHasher()
 SESSION_DAYS = 14
-LIMITS.update({"signup": (5, 3600), "login": (10, 300), "human_act": (60, 60), "dm": (30, 60)})
+LIMITS.update({
+    "signup": (5, 3600), "login": (10, 300), "human_act": (60, 60), "dm": (30, 60),
+    "signup_challenge": (30, 3600), "human_post": (10, 60), "human_reply": (10, 60),
+    "human_follow": (30, 60), "abuse_report": (8, 3600),
+})
 
 def current_human(c, request):
     tok = request.cookies.get("syn_session")
@@ -2427,20 +2724,158 @@ class Signup(BaseModel):
     email: str = Field(max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     username: str = Field(min_length=3, max_length=20, pattern=r"^[A-Za-z0-9_]+$")
     password: str = Field(min_length=8, max_length=128)
+    challenge_id: str = Field(min_length=8, max_length=80)
+    challenge_answer: str = Field(min_length=1, max_length=20)
+    website: Optional[str] = Field(None, max_length=200)
 
 class Login(BaseModel):
     email: str; password: str
 
+class HumanUpdate(BaseModel):
+    display_name: Optional[str] = Field(None, max_length=40)
+    bio: Optional[str] = Field(None, max_length=200)
+
+_CHALLENGE_TTL = 600
+
+def _challenge_prompt():
+    """Prompt is exactly 'What is {a} {op} {b}?' with a and b in 2..9.
+
+    Subtraction swaps the operands so the answer is never negative.
+    """
+    a = random.randint(2, 9)
+    b = random.randint(2, 9)
+    op = random.choice(("+", "-", "×"))
+    if op == "-" and a < b:
+        a, b = b, a
+    if op == "+":
+        answer = a + b
+    elif op == "-":
+        answer = a - b
+    else:
+        answer = a * b
+    return f"What is {a} {op} {b}?", str(answer)
+
+def _verification_configured():
+    sender = (os.environ.get("REPORT_FROM_EMAIL") or "").strip()
+    resend = (os.environ.get("RESEND_API_KEY") or "").strip()
+    smtp = (os.environ.get("SMTP_HOST") or "").strip()
+    return bool(sender and (resend or smtp))
+
+def _deliver_verification(to_email, link):
+    """Send the verify link. Raises when the provider fails so signup can roll back."""
+    import urllib.request
+    sender = (os.environ.get("REPORT_FROM_EMAIL") or "").strip()
+    subject = "Verify your MindGuild email"
+    text = "Confirm this address to post on MindGuild:\n" + link + "\n"
+    resend_key = (os.environ.get("RESEND_API_KEY") or "").strip()
+    if resend_key:
+        body = json.dumps({"from": sender, "to": [to_email], "subject": subject, "text": text}).encode()
+        req = urllib.request.Request(
+            "https://api.resend.com/emails", data=body, method="POST",
+            headers={"Authorization": "Bearer " + resend_key, "Content-Type": "application/json",
+                     "User-Agent": "MindGuild/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            resp.read()
+        return
+    import smtplib
+    from email.message import EmailMessage
+    host = (os.environ.get("SMTP_HOST") or "").strip()
+    try:
+        port = int((os.environ.get("SMTP_PORT") or "587").strip())
+    except ValueError:
+        port = 587
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = to_email
+    message["Subject"] = subject
+    message.set_content(text)
+    with smtplib.SMTP(host, port, timeout=8) as smtp:
+        smtp.starttls()
+        user = (os.environ.get("SMTP_USERNAME") or "").strip()
+        password = os.environ.get("SMTP_PASSWORD") or ""
+        if user:
+            smtp.login(user, password)
+        smtp.send_message(message)
+
+def _consume_challenge(c, cid, answer):
+    row = c.execute("SELECT * FROM signup_challenges WHERE id=?", (cid,)).fetchone()
+    if not row or int(row["used"] or 0) or float(row["expires"]) < time.time():
+        return False
+    ok = hmac.compare_digest(row["answer_hash"], shash((answer or "").strip()))
+    c.execute("UPDATE signup_challenges SET used=1 WHERE id=?", (cid,))
+    return ok
+
+@app.get("/api/auth/challenge", tags=["humans"], summary="Arithmetic challenge for signup (the answer is not returned)")
+def auth_challenge(request: Request):
+    rate("signup_challenge", client_ip(request))
+    prompt, answer = _challenge_prompt()
+    cid = secrets.token_urlsafe(18)
+    expires = time.time() + _CHALLENGE_TTL
+    c = db()
+    try:
+        c.execute(
+            "INSERT INTO signup_challenges(id,answer_hash,expires,used) VALUES(?,?,?,0)",
+            (cid, shash(answer), expires))
+        c.commit()
+    finally:
+        c.close()
+    return {"id": cid, "prompt": prompt, "expires": expires}
+
 @app.post("/api/auth/signup", status_code=201, tags=["humans"], summary="Create a human account (sets a session cookie)")
 def signup(s: Signup, request: Request, response: _Resp):
     rate("signup", client_ip(request))
+    if (s.website or "").strip():
+        raise HTTPException(422, "challenge failed")
     check_violence(s.username)
+    verify = _verification_configured()
+    token = secrets.token_urlsafe(32) if verify else None
     c = db()
     try:
-        cur = c.execute("INSERT INTO humans(email,username,pw_hash,created) VALUES(?,?,?,?)", (s.email.lower(), s.username, PH.hash(s.password), time.time())); c.commit()
-    except sqlite3.IntegrityError: c.close(); raise HTTPException(409, "email or username already taken")
-    h = c.execute("SELECT * FROM humans WHERE id=?", (cur.lastrowid,)).fetchone(); c.close()
-    _start_session(response, h["id"], request); return _human_public(h)
+        if not _consume_challenge(c, s.challenge_id, s.challenge_answer):
+            c.commit()
+            raise HTTPException(422, "challenge failed")
+        cur = c.execute(
+            """INSERT INTO humans(email,username,pw_hash,created,email_verified,email_verify_hash,email_verify_expires)
+               VALUES(?,?,?,?,?,?,?)""",
+            (s.email.lower(), s.username, PH.hash(s.password), time.time(),
+             0 if verify else 1, shash(token) if token else None,
+             time.time() + 86400 if token else None))
+        hid = cur.lastrowid
+        c.commit()
+        if verify:
+            import reports
+            link = reports.public_base_url(request).rstrip("/") + "/api/auth/verify-email?token=" + token
+            try:
+                _deliver_verification(s.email.lower(), link)
+            except Exception:
+                c.execute("DELETE FROM sessions WHERE human_id=?", (hid,))
+                c.execute("DELETE FROM humans WHERE id=?", (hid,))
+                c.commit()
+                raise HTTPException(503, "could not send verification email")
+        h = c.execute("SELECT * FROM humans WHERE id=?", (hid,)).fetchone()
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "email or username already taken")
+    finally:
+        c.close()
+    _start_session(response, h["id"], request)
+    return _human_public(h)
+
+@app.get("/api/auth/verify-email", tags=["humans"], summary="Confirm an email when verification is configured")
+def verify_email(token: str):
+    if not token or len(token) > 200:
+        raise HTTPException(422, "invalid or expired token")
+    c = db()
+    try:
+        h = c.execute("SELECT * FROM humans WHERE email_verify_hash=?", (shash(token),)).fetchone()
+        if not h or not h["email_verify_expires"] or float(h["email_verify_expires"]) < time.time():
+            raise HTTPException(422, "invalid or expired token")
+        c.execute(
+            "UPDATE humans SET email_verified=1, email_verify_hash=NULL, email_verify_expires=NULL WHERE id=?",
+            (h["id"],))
+        c.commit()
+    finally:
+        c.close()
+    return {"ok": True, "email_verified": True}
 
 @app.post("/api/auth/login", tags=["humans"], summary="Log in (sets a session cookie)")
 def login(l: Login, request: Request, response: _Resp):
@@ -2458,11 +2893,64 @@ def logout(request: Request, response: _Resp):
     if tok: c = db(); c.execute("DELETE FROM sessions WHERE token_hash=?", (shash(tok),)); c.commit(); c.close()
     response.delete_cookie("syn_session", path="/"); return {"ok": True}
 
+def _me_payload(c, h):
+    f = [r[0] for r in c.execute("SELECT b.handle FROM human_follows hf JOIN bots b ON b.id=hf.bot_id WHERE hf.human_id=?", (h["id"],))]
+    n = c.execute("SELECT COUNT(*) FROM bots WHERE owner_id=?", (h["id"],)).fetchone()[0]
+    card = _public_human(h)
+    raw_name = h["display_name"] if "display_name" in h.keys() and h["display_name"] else ""
+    verified = h["email_verified"] if "email_verified" in h.keys() and h["email_verified"] is not None else 1
+    return dict(_human_public(h), following=f, bots=n, display_name=raw_name or "",
+                bio=card["bio"] if card else "", email_verified=int(verified),
+                banned=bool(h["banned"]) if "banned" in h.keys() and h["banned"] else False)
+
 @app.get("/api/me", tags=["humans"])
 def me(h: dict = Depends(need_human)):
-    c = db(); f = [r[0] for r in c.execute("SELECT b.handle FROM human_follows hf JOIN bots b ON b.id=hf.bot_id WHERE hf.human_id=?", (h["id"],))]
-    n = c.execute("SELECT COUNT(*) FROM bots WHERE owner_id=?", (h["id"],)).fetchone()[0]; c.close()
-    return dict(_human_public(h), following=f, bots=n)
+    c = db()
+    try:
+        return _me_payload(c, h)
+    finally:
+        c.close()
+
+@app.patch("/api/me", tags=["humans"], summary="Update your display name and bio")
+def update_me(u: HumanUpdate, h: dict = Depends(need_human)):
+    name = sanitize_plain(u.display_name) if u.display_name is not None else None
+    bio = sanitize_plain(u.bio) if u.bio is not None else None
+    if name is not None:
+        name = name.strip()
+        if len(name) > 40:
+            raise HTTPException(422, "display name is too long")
+    if bio is not None:
+        bio = bio.strip()
+        if len(bio) > 200:
+            raise HTTPException(422, "bio is too long")
+    check_violence(name, bio)
+    c = db()
+    try:
+        if name is not None:
+            c.execute("UPDATE humans SET display_name=? WHERE id=?", (name, h["id"]))
+        if bio is not None:
+            c.execute("UPDATE humans SET bio=? WHERE id=?", (bio, h["id"]))
+        c.commit()
+        row = dict(c.execute("SELECT * FROM humans WHERE id=?", (h["id"],)).fetchone())
+        return _me_payload(c, row)
+    finally:
+        c.close()
+
+@app.get("/api/humans/{username}", tags=["humans"], summary="Public human profile (no email)")
+def human_profile(username: str):
+    c = db()
+    try:
+        h = c.execute("SELECT * FROM humans WHERE username=?", (username,)).fetchone()
+        if not h:
+            raise HTTPException(404, "no such human")
+        card = _public_human(h)
+        n = c.execute(
+            f"SELECT COUNT(*) FROM posts WHERE human_id=? AND parent_id IS NULL AND {VIS}",
+            (h["id"],)).fetchone()[0]
+        card["posts"] = n
+        return card
+    finally:
+        c.close()
 
 def _bot_by_handle(c, handle):
     b = c.execute("SELECT * FROM bots WHERE handle=?", (handle.lstrip("@"),)).fetchone()
@@ -2470,8 +2958,9 @@ def _bot_by_handle(c, handle):
     return b
 
 @app.post("/api/me/follow/{handle}", tags=["humans"], summary="Follow a bot (human)")
-def human_follow(handle: str, h: dict = Depends(need_human)):
+def human_follow(handle: str, request: Request, h: dict = Depends(need_human)):
     rate("human_act", f"h{h['id']}")
+    _rate_human(request, h, "human_follow")
     c = db(); b = _bot_by_handle(c, handle)
     c.execute("INSERT OR IGNORE INTO human_follows VALUES(?,?,?)", (h["id"], b["id"], time.time())); c.commit(); c.close(); return {"ok": True, "following": True}
 
@@ -2500,11 +2989,15 @@ def my_bots(h: dict = Depends(need_human)):
 
 @app.post("/api/me/bots", status_code=201, tags=["humans"], summary="Create a bot you own (human). Returns its API key once.")
 def my_create_bot(b: NewBot, request: Request, h: dict = Depends(need_human)):
-    check_violence(b.name, b.persona); rate("register", f"human:{h['id']}")
+    name = (sanitize_plain(b.name) or "").strip()
+    persona = sanitize_plain(b.persona) or ""
+    if not name:
+        raise HTTPException(422, "name cannot be blank")
+    check_violence(name, persona); rate("register", f"human:{h['id']}")
     key = "syn_" + secrets.token_urlsafe(32); c = db()
     try:
         cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,created,key_hash,category,owner_id) VALUES(?,?,?,?,?,?,?,?)",
-                        (b.name, b.handle.lstrip("@"), b.persona, b.avatar, time.time(), hkey(key), b.category, h["id"])); c.commit()
+                        (name, b.handle.lstrip("@"), persona, b.avatar, time.time(), hkey(key), b.category, h["id"])); c.commit()
     except sqlite3.IntegrityError: c.close(); raise HTTPException(409, "handle taken")
     r = _bot_stats(c, c.execute("SELECT * FROM bots WHERE id=?", (cur.lastrowid,)).fetchone()); c.close()
     r["api_key"] = key; r["note"] = "Store this key now; it is shown only once. You can regenerate it from My Bots."; return r
@@ -2513,6 +3006,12 @@ def my_create_bot(b: NewBot, request: Request, h: dict = Depends(need_human)):
 def my_update_bot(handle: str, u: BotUpdate, h: dict = Depends(need_human)):
     c = db(); b = _owned(c, h, handle); f = u.model_dump(exclude_none=True)
     if not f: c.close(); raise HTTPException(422, "nothing to update")
+    if "name" in f:
+        f["name"] = (sanitize_plain(f["name"]) or "").strip()
+        if not f["name"]:
+            c.close(); raise HTTPException(422, "name cannot be blank")
+    if "persona" in f:
+        f["persona"] = sanitize_plain(f["persona"]) or ""
     check_violence(f.get("name"), f.get("persona"))
     c.execute(f"UPDATE bots SET {', '.join(k+'=?' for k in f)} WHERE id=?", (*f.values(), b["id"])); c.commit()
     r = _bot_stats(c, c.execute("SELECT * FROM bots WHERE id=?", (b["id"],)).fetchone()); c.close(); return r
@@ -2630,6 +3129,62 @@ def _check_dm_allowed(c, actor, peer_type, peer_id):
         h = c.execute("SELECT allow_bot_dms FROM humans WHERE id=?", (peer_id,)).fetchone()
         if h and h["allow_bot_dms"] is not None and not h["allow_bot_dms"]:
             c.close(); raise HTTPException(403, "this human does not accept DMs from bots")
+
+class ContentReportIn(BaseModel):
+    target_type: Literal["post", "bot", "human"]
+    target_id: Optional[int] = None
+    handle: Optional[str] = Field(None, max_length=40)
+    reason: Optional[str] = Field(None, max_length=500)
+
+def _resolve_report_target(c, body, me):
+    kind = body.target_type
+    handle = (body.handle or "").lstrip("@").strip()
+    if kind == "post":
+        if not body.target_id:
+            raise HTTPException(422, "target_id required")
+        row = c.execute("SELECT id, bot_id, human_id FROM posts WHERE id=?", (body.target_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "post not found")
+        if (me["type"] == "bot" and row["bot_id"] == me["id"]) or (me["type"] == "human" and row["human_id"] == me["id"]):
+            raise HTTPException(422, "cannot report yourself")
+        return row["id"]
+    if kind == "bot":
+        if body.target_id:
+            row = c.execute("SELECT id FROM bots WHERE id=?", (body.target_id,)).fetchone()
+        else:
+            row = c.execute("SELECT id FROM bots WHERE handle=?", (handle,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such bot")
+        if me["type"] == "bot" and row["id"] == me["id"]:
+            raise HTTPException(422, "cannot report yourself")
+        return row["id"]
+    if body.target_id:
+        row = c.execute("SELECT id FROM humans WHERE id=?", (body.target_id,)).fetchone()
+    else:
+        row = c.execute("SELECT id FROM humans WHERE username=?", (handle,)).fetchone()
+    if not row:
+        raise HTTPException(404, "no such human")
+    if me["type"] == "human" and row["id"] == me["id"]:
+        raise HTTPException(422, "cannot report yourself")
+    return row["id"]
+
+@app.post("/api/reports", status_code=201, tags=["humans"], summary="Report a post, bot, or human")
+def report_content(body: ContentReportIn, request: Request, me: dict = Depends(auth_actor)):
+    rate("abuse_report", me["type"] + ":" + str(me["id"]))
+    rate("abuse_report", "ip:" + client_ip(request))
+    reason = (sanitize_plain(body.reason) or "").strip() if body.reason else ""
+    check_violence(reason)
+    c = db()
+    try:
+        target_id = _resolve_report_target(c, body, me)
+        c.execute(
+            """INSERT INTO content_reports(reporter_type,reporter_id,target_type,target_id,reason,status,created)
+               VALUES(?,?,?,?,?,'open',?)""",
+            (me["type"], me["id"], body.target_type, target_id, reason or None, time.time()))
+        c.commit()
+        return {"ok": True}
+    finally:
+        c.close()
 
 class DmOpen(BaseModel):
     peer_type: Literal["human", "bot"]
@@ -2823,7 +3378,10 @@ def _bot_mini(c, bot_id):
 def _problem_counts(c, pid):
     replies = c.execute(
         """SELECT COUNT(*) FROM problem_replies r
-           WHERE r.problem_id=? AND r.bot_id NOT IN (SELECT id FROM bots WHERE banned=1)""",
+           WHERE r.problem_id=? AND (
+             (r.bot_id IS NOT NULL AND r.bot_id NOT IN (SELECT id FROM bots WHERE banned=1))
+             OR (r.human_id IS NOT NULL AND r.human_id NOT IN (SELECT id FROM humans WHERE COALESCE(banned,0)=1))
+           )""",
         (pid,)).fetchone()[0]
     collabs = c.execute(
         """SELECT COUNT(*) FROM problem_collaborators k
@@ -2837,14 +3395,25 @@ def _problem_card(c, career_card_id):
     if not career_card_id:
         return None
     row = c.execute(
-        """SELECT cc.id, cc.post_id, cc.title, b.handle, b.name, b.avatar
-           FROM career_cards cc JOIN posts p ON p.id=cc.post_id JOIN bots b ON b.id=p.bot_id
+        """SELECT cc.id, cc.post_id, cc.title,
+                  b.handle AS bhandle, b.name AS bname, b.avatar AS bavatar,
+                  h.username AS huser, h.display_name AS hname
+           FROM career_cards cc
+           JOIN posts p ON p.id=cc.post_id
+           LEFT JOIN bots b ON b.id=p.bot_id
+           LEFT JOIN humans h ON h.id=p.human_id
            WHERE cc.id=?""",
         (career_card_id,)).fetchone()
     if not row:
         return None
-    return {"id": row["id"], "post_id": row["post_id"], "title": row["title"], "handle": row["handle"],
-            "name": row["name"], "avatar": row["avatar"], "speculative": True, "label": SPECULATIVE_LABEL}
+    if row["huser"] and not row["bhandle"]:
+        name = (row["hname"] or "").strip() or row["huser"]
+        return {"id": row["id"], "post_id": row["post_id"], "title": row["title"],
+                "handle": row["huser"], "name": name, "avatar": "👤",
+                "speculative": True, "label": SPECULATIVE_LABEL, "author_type": "human"}
+    return {"id": row["id"], "post_id": row["post_id"], "title": row["title"],
+            "handle": row["bhandle"], "name": row["bname"], "avatar": row["bavatar"],
+            "speculative": True, "label": SPECULATIVE_LABEL, "author_type": "bot"}
 
 def _problem_collaborators(c, pid):
     rows = c.execute(
@@ -2865,16 +3434,38 @@ def _problem_collaborators(c, pid):
                         "avatar": "👤", "joined_at": r["joined_at"]})
     return out
 
+def _reply_author(c, row):
+    keys = row.keys()
+    if "human_id" in keys and row["human_id"]:
+        h = c.execute("SELECT * FROM humans WHERE id=?", (row["human_id"],)).fetchone()
+        if not h or int(h["banned"] or 0):
+            return None
+        return {"author_type": "human", "bot": None, "human": _public_human(h)}
+    bot = _bot_mini(c, row["bot_id"])
+    if not bot or bot["banned"]:
+        return None
+    return {"author_type": "bot", "bot": bot, "human": None}
+
 def _problem_replies(c, pid):
     rows = c.execute(
-        """SELECT r.* FROM problem_replies r JOIN bots b ON b.id=r.bot_id
-           WHERE r.problem_id=? AND b.banned=0 ORDER BY r.id""",
+        """SELECT r.* FROM problem_replies r
+           LEFT JOIN bots b ON b.id=r.bot_id
+           LEFT JOIN humans h ON h.id=r.human_id
+           WHERE r.problem_id=? AND (
+             (r.bot_id IS NOT NULL AND COALESCE(b.banned,0)=0)
+             OR (r.human_id IS NOT NULL AND COALESCE(h.banned,0)=0)
+           )
+           ORDER BY r.id""",
         (pid,)).fetchall()
     out = []
     for r in rows:
-        out.append({"id": r["id"], "problem_id": r["problem_id"], "parent_id": r["parent_id"],
-                    "role": r["role"], "content": r["content"], "created": r["created"],
-                    "bot": _bot_mini(c, r["bot_id"])})
+        author = _reply_author(c, r)
+        if not author:
+            continue
+        item = {"id": r["id"], "problem_id": r["problem_id"], "parent_id": r["parent_id"],
+                "role": r["role"], "content": r["content"], "created": r["created"]}
+        item.update(author)
+        out.append(item)
     return out
 
 def _problem_summary(c, row):
@@ -2884,10 +3475,29 @@ def _problem_summary(c, row):
         "who_affected": row["who_affected"], "status": row["status"],
         "best_answer": row["best_answer"], "best_answer_updated_at": row["best_answer_updated_at"],
         "evidence_url": row["evidence_url"], "created": row["created"], "updated": row["updated"],
-        "created_by": _bot_mini(c, row["created_by_bot_id"]) if row["created_by_bot_id"] else None,
+        "created_by": _problem_creator(c, row),
         "career_card": _problem_card(c, row["career_card_id"]),
         "reply_count": replies, "collaborator_count": collabs,
     }
+
+def _problem_creator(c, row):
+    keys = row.keys()
+    if row["created_by_bot_id"]:
+        bot = _bot_mini(c, row["created_by_bot_id"])
+        if bot:
+            bot = dict(bot)
+            bot["type"] = "bot"
+            bot["kind"] = "bot"
+        return bot
+    human_id = row["created_by_human_id"] if "created_by_human_id" in keys else None
+    if not human_id:
+        return None
+    h = c.execute("SELECT * FROM humans WHERE id=?", (human_id,)).fetchone()
+    card = _public_human(h)
+    if not card:
+        return None
+    card["type"] = "human"
+    return card
 
 def _problem_detail(c, row, actor=None):
     d = _problem_summary(c, row)
@@ -3017,56 +3627,75 @@ def problem_best_history(pid: int):
             "SELECT * FROM problem_best_answer_history WHERE problem_id=? ORDER BY id", (pid,)).fetchall()
         out = []
         for i, h in enumerate(hist, 1):
+            keys = h.keys()
+            hid = h["human_id"] if "human_id" in keys else None
+            human = None
+            if hid:
+                person = c.execute("SELECT * FROM humans WHERE id=?", (hid,)).fetchone()
+                human = _public_human(person)
             out.append({"version": i, "id": h["id"], "reply_id": h["reply_id"], "best_answer": h["best_answer"],
-                        "created": h["created"], "bot": _bot_mini(c, h["bot_id"]) if h["bot_id"] else None})
+                        "created": h["created"], "bot": _bot_mini(c, h["bot_id"]) if h["bot_id"] else None,
+                        "human": human, "author_type": "human" if hid else "bot"})
         return out
     finally:
         c.close()
 
-@app.post("/api/problems", status_code=201, tags=["problems"], summary="Open a problem (bot API key)")
-def create_problem(body: NewProblem, me: dict = Depends(auth_bot)):
-    title = body.title.strip()
-    wrong = body.whats_wrong.strip()
-    who = body.who_affected.strip()
-    note = (body.evidence_note or "").strip() or None
+@app.post("/api/problems", status_code=201, tags=["problems"], summary="Open a problem (bot API key or human session)")
+def create_problem(body: NewProblem, request: Request, me: dict = Depends(auth_poster)):
+    human = me["type"] == "human"
+    title = (sanitize_plain(body.title) if human else body.title).strip()
+    wrong = (sanitize_plain(body.whats_wrong) if human else body.whats_wrong).strip()
+    who = (sanitize_plain(body.who_affected) if human else body.who_affected).strip()
+    note_raw = body.evidence_note or ""
+    note = ((sanitize_plain(note_raw) if human else note_raw).strip() or None)
     if not title or not wrong or not who:
         raise HTTPException(422, "title, whats_wrong, and who_affected cannot be blank")
     check_violence(title, wrong, who, note, body.evidence_url)
     check_business(title, wrong, who, note, body.evidence_url)
-    rate("post", me["id"])
+    if human:
+        _rate_human(request, me["human"], "human_post")
+    else:
+        rate("post", me["id"])
     c = db()
     try:
         if body.career_card_id is not None and not c.execute(
                 "SELECT 1 FROM career_cards WHERE id=?", (body.career_card_id,)).fetchone():
             raise HTTPException(404, "career card not found")
         now = time.time()
+        bot_id = None if human else me["id"]
+        human_id = me["id"] if human else None
         cur = c.execute(
             """INSERT INTO problems(title, whats_wrong, evidence_url, evidence_note, who_affected, status,
-               created_by_bot_id, career_card_id, created, updated)
-               VALUES(?,?,?,?,?,'open',?,?,?,?)""",
-            (title, wrong, body.evidence_url, note, who, me["id"], body.career_card_id, now, now))
+               created_by_bot_id, created_by_human_id, career_card_id, created, updated)
+               VALUES(?,?,?,?,?,'open',?,?,?,?,?)""",
+            (title, wrong, body.evidence_url, note, who, bot_id, human_id, body.career_card_id, now, now))
         pid = cur.lastrowid
-        _join_bot_id(c, pid, me["id"], now)
+        _join_actor(c, pid, me, now)
         c.commit()
         row = c.execute("SELECT * FROM problems WHERE id=?", (pid,)).fetchone()
-        return _problem_detail(c, row, {"type": "bot", "id": me["id"]})
+        return _problem_detail(c, row, {"type": me["type"], "id": me["id"]})
     finally:
         c.close()
 
 @app.post("/api/problems/{pid}/replies", status_code=201, tags=["problems"],
           summary="Reply with a role: proposal, counterpoint, evidence, test, or synthesis")
-def reply_problem(pid: int, body: ProblemReplyIn, me: dict = Depends(auth_bot)):
-    content = body.content.strip()
+def reply_problem(pid: int, body: ProblemReplyIn, request: Request, me: dict = Depends(auth_poster)):
+    human = me["type"] == "human"
+    content = (sanitize_plain(body.content) if human else body.content).strip()
     if not content:
         raise HTTPException(422, "empty content")
     check_violence(content)
     check_business(content)
+    check_evidence_citation(body.role, content)
     set_best = body.set_best_answer
     if set_best is None:
         set_best = body.role == "synthesis"
     if set_best and body.role != "synthesis":
         raise HTTPException(422, "only a synthesis reply can update the best answer")
-    rate("post", me["id"])
+    if human:
+        _rate_human(request, me["human"], "human_reply")
+    else:
+        rate("post", me["id"])
     c = db()
     try:
         row = _visible_problem(c, pid)
@@ -3079,21 +3708,27 @@ def reply_problem(pid: int, body: ProblemReplyIn, me: dict = Depends(auth_bot)):
             if not parent or parent["problem_id"] != pid:
                 raise HTTPException(404, "parent reply not found on this problem")
         now = time.time()
+        bot_id = None if human else me["id"]
+        human_id = me["id"] if human else None
         cur = c.execute(
-            "INSERT INTO problem_replies(problem_id, bot_id, parent_id, role, content, created) VALUES(?,?,?,?,?,?)",
-            (pid, me["id"], parent_id, body.role, content, now))
+            """INSERT INTO problem_replies(problem_id, bot_id, human_id, parent_id, role, content, created)
+               VALUES(?,?,?,?,?,?,?)""",
+            (pid, bot_id, human_id, parent_id, body.role, content, now))
         rid = cur.lastrowid
-        _join_actor(c, pid, {"type": "bot", "id": me["id"]}, now)
+        _join_actor(c, pid, me, now)
         updated = False
         if set_best:
-            updated = _set_best_answer(c, pid, rid, me["id"], content, now, row["best_answer"], row["best_answer_reply_id"])
+            updated = _set_best_answer(
+                c, pid, rid, bot_id, content, now, row["best_answer"], row["best_answer_reply_id"],
+                human_id=human_id)
         else:
             c.execute("UPDATE problems SET updated=? WHERE id=?", (now, pid))
         c.commit()
         reply = c.execute("SELECT * FROM problem_replies WHERE id=?", (rid,)).fetchone()
         fresh = c.execute("SELECT * FROM problems WHERE id=?", (pid,)).fetchone()
+        author = _reply_author(c, reply) or {"author_type": me["type"], "bot": None, "human": None}
         return {"id": reply["id"], "problem_id": pid, "parent_id": reply["parent_id"], "role": reply["role"],
-                "content": reply["content"], "created": reply["created"], "bot": _bot_mini(c, me["id"]),
+                "content": reply["content"], "created": reply["created"], **author,
                 "best_answer_updated": updated, "best_answer": fresh["best_answer"],
                 "best_answer_reply_id": fresh["best_answer_reply_id"]}
     finally:
@@ -3101,8 +3736,11 @@ def reply_problem(pid: int, body: ProblemReplyIn, me: dict = Depends(auth_bot)):
 
 @app.post("/api/problems/{pid}/best-answer", tags=["problems"],
           summary="Set the living best answer from your synthesis reply")
-def set_problem_best_answer(pid: int, body: BestAnswerIn, me: dict = Depends(auth_bot)):
-    rate("act", me["id"])
+def set_problem_best_answer(pid: int, body: BestAnswerIn, request: Request, me: dict = Depends(auth_poster)):
+    if me["type"] == "human":
+        _rate_human(request, me["human"], "human_act")
+    else:
+        rate("act", me["id"])
     c = db()
     try:
         row = _visible_problem(c, pid)
@@ -3113,34 +3751,47 @@ def set_problem_best_answer(pid: int, body: BestAnswerIn, me: dict = Depends(aut
             raise HTTPException(404, "reply not found on this problem")
         if reply["role"] != "synthesis":
             raise HTTPException(422, "best answer can only be set from a synthesis reply")
-        if reply["bot_id"] != me["id"]:
+        owns = (me["type"] == "bot" and reply["bot_id"] == me["id"]) or (
+            me["type"] == "human" and reply["human_id"] == me["id"])
+        if not owns:
             raise HTTPException(403, "only the synthesis author can set the best answer from that reply")
         now = time.time()
-        _set_best_answer(c, pid, reply["id"], me["id"], reply["content"], now, row["best_answer"], row["best_answer_reply_id"])
+        _set_best_answer(
+            c, pid, reply["id"], reply["bot_id"], reply["content"], now,
+            row["best_answer"], row["best_answer_reply_id"], human_id=reply["human_id"])
         c.commit()
         fresh = c.execute("SELECT * FROM problems WHERE id=?", (pid,)).fetchone()
-        return _problem_detail(c, fresh, {"type": "bot", "id": me["id"]})
+        return _problem_detail(c, fresh, {"type": me["type"], "id": me["id"]})
     finally:
         c.close()
 
 @app.post("/api/problems/{pid}/status", tags=["problems"],
           summary="Set status: open, in_progress, proposed_solution, or needs_humans")
-def set_problem_status(pid: int, body: ProblemStatusIn, me: dict = Depends(auth_bot)):
-    rate("act", me["id"])
+def set_problem_status(pid: int, body: ProblemStatusIn, request: Request, me: dict = Depends(auth_poster)):
+    if me["type"] == "human":
+        _rate_human(request, me["human"], "human_act")
+    else:
+        rate("act", me["id"])
     c = db()
     try:
         row = _visible_problem(c, pid)
         if not row:
             raise HTTPException(404, "problem not found")
-        if not c.execute(
+        if me["type"] == "bot":
+            joined = c.execute(
                 "SELECT 1 FROM problem_collaborators WHERE problem_id=? AND bot_id=?",
-                (pid, me["id"])).fetchone():
+                (pid, me["id"])).fetchone()
+        else:
+            joined = c.execute(
+                "SELECT 1 FROM problem_collaborators WHERE problem_id=? AND human_id=?",
+                (pid, me["id"])).fetchone()
+        if not joined:
             raise HTTPException(403, "join this problem before setting its status")
         now = time.time()
         c.execute("UPDATE problems SET status=?, updated=? WHERE id=?", (body.status, now, pid))
         c.commit()
         fresh = c.execute("SELECT * FROM problems WHERE id=?", (pid,)).fetchone()
-        return _problem_detail(c, fresh, {"type": "bot", "id": me["id"]})
+        return _problem_detail(c, fresh, {"type": me["type"], "id": me["id"]})
     finally:
         c.close()
 
