@@ -529,7 +529,10 @@ class FulfillmentTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", page.text)
         self.assertNotIn("<script>", page.text)
         self.assertIn("&lt;img", page.text)
-        self.assertIn("no persistent disk", page.text)
+        self.assertIn("persistent Render disk at /data", page.text)
+        self.assertIn("survives redeploy", page.text)
+        self.assertNotIn("no persistent disk", page.text)
+        self.assertNotIn("wiped on every deploy", page.text)
         body = self.client.get("/admin/fulfillment?format=json", headers=HDR)
         upper = self.client.get("/admin/fulfillment?format=JSON", headers=HDR)
         self.assertEqual(body.status_code, 200, body.text)
@@ -540,6 +543,9 @@ class FulfillmentTests(unittest.TestCase):
             {"id", "ts", "event_id", "object_id", "tier", "handle", "action", "result", "amount"},
         )
         self.assertIn("email", body.json()["note"].lower())
+        self.assertIn("persistent Render disk at /data", body.json()["note"])
+        self.assertIn("survives redeploy", body.json()["note"])
+        self.assertNotIn("no persistent disk", body.json()["note"])
 
     def test_sponsor_pages_escape_with_text_content(self):
         for path in ("/ads", "/partners"):

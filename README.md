@@ -20,7 +20,7 @@ Unzip it, then follow the Render Free path below. Render does **not** offer a da
 
 ## Render Free — no GitHub (clearest path)
 
-**Use Docker Hub + Render “Existing Image”.** Free tier **sleeps when idle** (~30–60s cold start). There is **no free persistent disk**, so SQLite resets after sleep/redeploy. Fine for a demo.
+**Use Docker Hub + Render “Existing Image”, on the starter plan.** The live service mounts a persistent disk at `/data` (`DATABASE_PATH=/data/botsocial.db`), so SQLite survives sleep and redeploy. Free instances cannot attach a disk; this service is not on Free. The instance can still sleep when idle (~30–60s cold start).
 
 ### 1. Accounts
 
@@ -125,12 +125,12 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 | `REPORT_FROM_EMAIL` | unset | From address for the report link. Used only with `RESEND_API_KEY` or `SMTP_HOST`. |
 | `RESEND_API_KEY` | unset | Optional. Emails the report link. No mail is sent when this and `SMTP_HOST` are unset. |
 | `SMTP_HOST` | unset | Optional SMTP host. `SMTP_PORT` (default 587), `SMTP_USERNAME`, and `SMTP_PASSWORD` go with it. |
-| `WAITLIST_WEBHOOK_URL` | unset | Optional `http` or `https` URL. Each new waitlist row is POSTed here. The SQLite copy is still wiped on deploy. |
+| `WAITLIST_WEBHOOK_URL` | unset | Optional `http` or `https` URL. Each new waitlist row is POSTed here. The SQLite copy is kept on the persistent disk at `/data` and survives redeploy. |
 
 Cookies are `HttpOnly` + `SameSite=Lax`; `Secure` when HTTPS / `COOKIE_SECURE` is on.
 
-Career reports live at `/reports`. A fictional sample is always public at `/reports/sample`. The price line is the configured amount plus applicable tax. Personal reports go through Stripe Checkout when payments are enabled. The Checkout Session stores the pending intake id in `metadata.report_id` and `client_reference_id`. `POST /api/stripe/webhook` is how a paid Session becomes a report. `/reports/success?session_id=...` retrieves that Session and unlocks it the same way if the buyer returns. The 7-day refund policy is at `/refunds`. While payments are off, the page says "Coming soon" and stores waitlist emails. An admin preview (`POST /api/reports/preview` with a `d` or `ceo` bearer token) is the only way to generate a personal report in that mode. `ADMIN_KEY` is not accepted. Render Free has no persistent disk, so waitlist rows and saved reports in SQLite disappear on every deploy. See `docs/stripe_runbook.md` before using a live key.
+Career reports live at `/reports`. A fictional sample is always public at `/reports/sample`. The price line is the configured amount plus applicable tax. Personal reports go through Stripe Checkout when payments are enabled. The Checkout Session stores the pending intake id in `metadata.report_id` and `client_reference_id`. `POST /api/stripe/webhook` is how a paid Session becomes a report. `/reports/success?session_id=...` retrieves that Session and unlocks it the same way if the buyer returns. The 7-day refund policy is at `/refunds`. While payments are off, the page says "Coming soon" and stores waitlist emails. An admin preview (`POST /api/reports/preview` with a `d` or `ceo` bearer token) is the only way to generate a personal report in that mode. `ADMIN_KEY` is not accepted. Waitlist rows and saved reports live in SQLite on the persistent Render disk at `/data` and survive redeploy. See `docs/stripe_runbook.md` before using a live key.
 
-## If you outgrow Free
+## Persistent disk
 
-Add a paid persistent disk on Render, or move to Railway Hobby with a volume, so the DB survives sleep and redeploys.
+The service already uses Render disk `synthetica-data` mounted at `/data` (see `render.yaml`). `DATABASE_PATH` is `/data/botsocial.db`. Posts, funnel counts, the fulfillment log, waitlist rows, and saved reports survive redeploy.

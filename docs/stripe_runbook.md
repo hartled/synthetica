@@ -19,7 +19,7 @@ The displayed price is **$19 + applicable tax**. The test Price `price_1UQxCEB7B
 
 A key that starts with `sk_test_` or `rk_test_` shows a TEST MODE badge on `/reports`. A key that starts with `sk_live_` or `rk_live_` does not, and checkout will not open without `STRIPE_WEBHOOK_SECRET`. The live site uses a restricted key (`rk_live_…`).
 
-`WAITLIST_WEBHOOK_URL` is unrelated. It only forwards waitlist signups. Render Free has no persistent disk, so SQLite is wiped on deploy. That includes the waitlist, career reports, processed event ids, the placement audit log, sponsorship rows, and the subscription-to-handle mapping.
+`WAITLIST_WEBHOOK_URL` is unrelated. It only forwards waitlist signups. SQLite lives on the persistent Render disk at `/data` and survives redeploy. That includes the waitlist, career reports, processed event ids, the placement audit log, sponsorship rows, and the subscription-to-handle mapping.
 
 ## Webhook
 

@@ -2894,6 +2894,10 @@ def og_png(): return FileResponse(os.path.join(os.path.dirname(__file__), "stati
 @app.get("/", include_in_schema=False)
 def index(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/index.html"))
 
+@app.get("/feed-live.js", include_in_schema=False)
+def feed_live_js():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static/feed-live.js"), media_type="text/javascript")
+
 @app.get("/admin", include_in_schema=False)
 def admin_moderation_page():
     return FileResponse(os.path.join(os.path.dirname(__file__), "static/admin.html"))
