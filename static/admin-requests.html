@@ -1,0 +1,118 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Requests · MindGuild admin</title>
+<style>
+*{box-sizing:border-box}html{color-scheme:dark}body{margin:0;font-family:system-ui,sans-serif;background:#0f1220;color:#e7e9f3}
+main{max-width:960px;margin:28px auto;padding:0 16px}
+.card{background:#171c33;border:1px solid #262c48;border-radius:14px;padding:18px;margin-bottom:14px;overflow-x:auto}
+input,button,select{font:inherit}input{width:100%;background:#0b0e1a;color:#e7e9f3;border:1px solid #39407a;border-radius:8px;padding:10px;margin:6px 0 12px;min-height:44px}
+button{background:#7c8cff;color:#0f1220;border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer;min-height:44px}
+select{background:#0b0e1a;color:#e7e9f3;border:1px solid #39407a;border-radius:8px;padding:8px;min-height:44px}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid #262c48;padding:8px;text-align:left;vertical-align:top}
+th{color:#c5cce6;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+.err{color:#ffb4c0;min-height:18px;font-size:13px}.ok{color:#9be5c4;font-size:13px}
+a{color:#b7c4ff}.desc{white-space:pre-wrap;color:#c5cce6;margin:4px 0 0}
+@media(max-width:700px){table,tbody,tr,th,td{display:block}th{display:none}td{border-bottom:0;padding:4px 0}tr{border-bottom:1px solid #262c48;padding:10px 0}}
+</style></head><body>
+<main>
+<h1>Feature requests</h1>
+<p>Private admin view. Emails are listed here and are not on the public board. This page is not in the sitemap.</p>
+<div class="card">
+<label for="key">Admin key</label>
+<input id="key" type="password" autocomplete="off" placeholder="Bearer token">
+<button type="button" id="load">Show requests</button>
+<div class="err" id="msg" role="status"></div>
+</div>
+<div class="card">
+<table>
+<thead><tr><th>Request</th><th>Votes</th><th>Email</th><th>Status</th></tr></thead>
+<tbody id="rows"></tbody>
+</table>
+<p id="empty" hidden>No requests yet.</p>
+</div>
+<p><a href="/admin">Moderation</a> · <a href="/requests">Public board</a> · <a href="/">Feed</a></p>
+</main>
+<script>
+const keyEl = document.getElementById("key");
+const msg = document.getElementById("msg");
+const rows = document.getElementById("rows");
+const STATUSES = ["open", "planned", "shipped", "declined"];
+keyEl.value = sessionStorage.getItem("mg_admin") || "";
+
+function say(text, ok) {
+  msg.textContent = text;
+  msg.className = ok ? "ok" : "err";
+}
+
+function cell(text) {
+  const td = document.createElement("td");
+  td.textContent = text == null || text === "" ? "—" : String(text);
+  return td;
+}
+
+function render(list) {
+  rows.replaceChildren();
+  document.getElementById("empty").hidden = list.length > 0;
+  list.forEach(function (item) {
+    const tr = document.createElement("tr");
+    const idea = document.createElement("td");
+    const strong = document.createElement("strong");
+    strong.textContent = item.title || "";
+    idea.appendChild(strong);
+    if (item.seeded) {
+      const mark = document.createElement("div");
+      mark.textContent = "Seeded by the MindGuild team";
+      idea.appendChild(mark);
+    }
+    const desc = document.createElement("p");
+    desc.className = "desc";
+    desc.textContent = item.description || "";
+    idea.appendChild(desc);
+    tr.appendChild(idea);
+    tr.appendChild(cell(item.vote_count));
+    tr.appendChild(cell(item.email));
+    const status = document.createElement("td");
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", "Status for " + (item.title || "request"));
+    STATUSES.forEach(function (name) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      if (name === item.status) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener("change", function () { save(item.id, sel); });
+    status.appendChild(sel);
+    tr.appendChild(status);
+    rows.appendChild(tr);
+  });
+}
+
+async function listed() {
+  const key = keyEl.value.trim();
+  say("", true);
+  if (!key) { say("Paste an admin key first.", false); return; }
+  sessionStorage.setItem("mg_admin", key);
+  const res = await fetch("/api/admin/requests", {headers: {Authorization: "Bearer " + key}});
+  const data = await res.json().catch(function () { return {}; });
+  if (!res.ok) { say(typeof data.detail === "string" ? data.detail : "Request failed", false); return; }
+  render(data.requests || []);
+  say("Loaded " + (data.requests || []).length + " requests.", true);
+}
+
+async function save(id, sel) {
+  const key = keyEl.value.trim();
+  const res = await fetch("/api/admin/requests/" + encodeURIComponent(id) + "/status", {
+    method: "POST",
+    headers: {"Content-Type": "application/json", Authorization: "Bearer " + key},
+    body: JSON.stringify({status: sel.value})
+  });
+  const data = await res.json().catch(function () { return {}; });
+  say(res.ok ? "Status saved." : (typeof data.detail === "string" ? data.detail : "Could not save status"), res.ok);
+  if (!res.ok) listed();
+}
+
+document.getElementById("load").addEventListener("click", listed);
+if (keyEl.value) listed();
+</script>
+</body></html>

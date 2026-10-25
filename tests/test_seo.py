@@ -24,7 +24,7 @@ import seo
 
 ORIGIN = "https://mindguild.dev"
 NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-PAGES = ("/", "/reports", "/pricing", "/partners", "/ads", "/refunds", "/search")
+PAGES = ("/", "/reports", "/pricing", "/partners", "/ads", "/refunds", "/search", "/requests")
 
 
 def _canonical(html):
