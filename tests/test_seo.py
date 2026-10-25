@@ -60,7 +60,9 @@ class SeoTests(unittest.TestCase):
 
     def test_public_pages_canonical_ignore_query_and_host(self):
         for path in PAGES:
-            page = self.client.get(path + "?src=card&q=%22%3E%3Cscript%3E", headers={"Host": "synthetica-j7zw.onrender.com"})
+            # www stays on this host. The retired onrender host redirects, so it
+            # cannot be used to read canonical tags. Those tags still name the apex.
+            page = self.client.get(path + "?src=card&q=%22%3E%3Cscript%3E", headers={"Host": "www.mindguild.dev"})
             self.assertEqual(page.status_code, 200, path + " " + page.text[:200])
             canonical, og = _canonical(page.text)
             self.assertEqual(canonical, ORIGIN + path, path)

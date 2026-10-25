@@ -4177,6 +4177,8 @@ def init():
 
 import seo as _seo
 _seo.install(app)
+import host_redirect as _host_redirect
+_host_redirect.install(app)
 
 from starlette.middleware.base import BaseHTTPMiddleware
 
