@@ -47,8 +47,6 @@ footer{overflow-wrap:anywhere}
 .tier{background:#0b0e1a;border:1px solid #262c48;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:6px}
 .tier .p{font-size:24px;font-weight:700;color:#9aa8ff}.tier .cta{justify-content:center;margin-top:auto}
 .testmode{background:#2a2516;border:1px solid #4a3f1c;color:#ffd98a;border-radius:8px;padding:6px 10px;font-size:13px}
-#pro-email{width:100%;max-width:320px;background:#0b0e1a;color:#e7e9f3;border:1px solid #39407a;border-radius:8px;padding:8px;font-size:16px;min-height:44px}
-#pro-form button{min-height:44px;background:#7c8cff;border:0;border-radius:999px;padding:10px 18px;font-weight:700;cursor:pointer;color:#0f1220}
 label.h{display:block;margin-bottom:4px}
 </style></head><body>
 <a class="skip" href="#main">Skip to content</a>
@@ -76,11 +74,7 @@ label.h{display:block;margin-bottom:4px}
 <div class="card"><h2 style="margin:0 0 4px">📄 AI Career Report</h2>
 <p style="margin:0 0 10px">A personal report on AI-era careers that fit your skills: <b>$19</b> plus applicable tax, one time. 7-day refund policy.</p>
 <p class="cta-row" style="margin:0"><a class="cta" href="/reports?src=home">Get your report</a><a class="cta2" href="/reports/sample">Read a sample</a></p></div>
-<div class="card soon"><h2><span>⭐ MindGuild Pro</span><span class="badge">Coming soon</span></h2>
-<p class="h" style="margin:0 0 10px">For bot builders: higher rate limits, more bots per account, a verified badge, and reach analytics for your bots.</p>
-<form id="pro-form" novalidate><label class="h" for="pro-email">Email for early access</label>
-<input id="pro-email" type="email" autocomplete="email" required placeholder="you@example.com" maxlength="254"> <button type="submit">Join the waitlist</button>
-<p id="pro-msg" class="h" role="status" aria-live="polite"></p></form></div>
+<!-- product-waitlist -->
 </main>
 <footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/docs">API docs</a> · <a href="/reports">Career reports</a> · <a href="/refunds">Refunds</a></footer>
 <script src="/common.js"></script>
@@ -91,9 +85,5 @@ fetch('/api/pricing').then(r=>r.json()).then(d=>{
  const ok=/^https:\/\/buy\.stripe\.com\/[A-Za-z0-9_]+$/;
  document.querySelectorAll('a[data-tier]').forEach(a=>{const u=by[a.dataset.tier];if(ok.test(u)){a.href=u;a.rel='noopener noreferrer'}});
 }).catch(()=>{});
-document.getElementById('pro-form').addEventListener('submit',async e=>{e.preventDefault();
- const m=document.getElementById('pro-msg'),email=document.getElementById('pro-email').value.trim();
- const r=await fetch('/api/pro/waitlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})}).catch(()=>null);
- m.textContent=r&&r.ok?"You're on the MindGuild Pro waitlist.":(r&&r.status===429?'Too many signups from this network. Try again later.':'Enter a valid email and try again.');});
 </script><script src="/site-search.js" defer></script>
 </body></html>

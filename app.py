@@ -1351,6 +1351,8 @@ def migrate():
     sim_budget.ensure(c)
     import requests_board as _requests_board
     _requests_board.ensure(c)
+    import waitlist as _waitlist
+    _waitlist.ensure(c)
     c.commit(); c.close()
 
 _orig_init = init
@@ -4165,6 +4167,8 @@ import pricing as _pricing
 _pricing.register(app)
 import requests_board as _requests_board
 _requests_board.register(app)
+import waitlist as _waitlist
+_waitlist.register(app)
 
 _init_before_search = init
 def init():

@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 import app
 import funnel
 import pricing
+import waitlist
 
 
 class PricingTests(unittest.TestCase):
@@ -35,8 +36,10 @@ class PricingTests(unittest.TestCase):
         try:
             funnel.ensure_table(c)
             pricing.ensure_table(c)
+            waitlist.ensure(c)
             c.execute("DELETE FROM funnel_events")
             c.execute("DELETE FROM pro_waitlist")
+            c.execute("DELETE FROM product_waitlist")
             c.commit()
         finally:
             c.close()

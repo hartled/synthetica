@@ -6,18 +6,17 @@ FEATURED_LINK_WEEK, FEATURED_LINK_MONTH) so live links can replace the
 test-mode defaults without a code change. No Stripe API calls happen here.
 
 The Pro waitlist stores emails in SQLite (pro_waitlist) and records a
-pro_waitlist_signup funnel event. The database file is on the persistent
-Render disk at /data and survives redeploy.
+pro_waitlist_signup funnel event. The same signup is also stored in
+product_waitlist, which Career Radar uses, so /admin/waitlist can count
+both. No Stripe call and no email is sent from either waitlist. The
+database file is on the persistent Render disk at /data and survives redeploy.
 """
 
 import os
 import re
-import time
 
-from fastapi import HTTPException, Request
-from fastapi.responses import FileResponse
-
-import funnel
+from fastapi import Request
+from fastapi.responses import HTMLResponse
 
 # Test-mode links from the MindGuild sandbox. Replace with live links on Render.
 DEFAULT_LINKS = {
@@ -32,7 +31,6 @@ _ENV = {"day": "AD_LINK_DAY", "week": "AD_LINK_WEEK", "section": "AD_LINK_SECTIO
 # \A and \Z, not ^ and $, so a trailing newline cannot slip through.
 # Host is exactly buy.stripe.com. One path segment, no query, userinfo, or slash.
 _LINK_OK = re.compile(r"\Ahttps://buy\.stripe\.com/[A-Za-z0-9_]+\Z")
-_EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$")
 _PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "pricing.html")
 
 
@@ -58,6 +56,8 @@ def ensure_table(c):
 def register(application):
     import app as appmod
 
+    # The enforced bucket is product_waitlist in waitlist.py (5/hour, shared
+    # with Career Radar). This name stays so the old limit key is still defined.
     appmod.LIMITS["pro_waitlist"] = (5, 3600)
     c = appmod.db()
     try:
@@ -68,7 +68,15 @@ def register(application):
 
     @application.get("/pricing", include_in_schema=False)
     def pricing_page():
-        return FileResponse(_PAGE)
+        import waitlist
+
+        with open(_PAGE, encoding="utf-8") as handle:
+            html = handle.read()
+        marker = "<!-- product-waitlist -->"
+        if marker not in html:
+            raise RuntimeError("pricing page is missing the waitlist marker")
+        html = html.replace(marker, waitlist.cards_html("pricing"), 1)
+        return HTMLResponse(html)
 
     @application.get("/api/pricing", tags=["pricing"], summary="Ad tiers, Payment Links, and report price")
     def pricing_api():
@@ -86,26 +94,17 @@ def register(application):
             ],
             "career_report": {"price": os.environ.get("REPORT_PRICE_DISPLAY", "$19"), "url": "/reports?src=home"},
             "pro": {"status": "coming_soon", "waitlist": "/api/pro/waitlist"},
+            "career_radar": {
+                "status": "not_built",
+                "price": "$12-29/mo",
+                "price_options_usd": [12, 19, 29],
+                "waitlist": "/api/waitlist",
+                "note": "Waitlist only. No payment is taken.",
+            },
         }
 
     @application.post("/api/pro/waitlist", status_code=201, tags=["pricing"], summary="Join the MindGuild Pro waitlist")
     async def pro_waitlist(request: Request):
-        appmod.rate("pro_waitlist", appmod.client_ip(request))
-        try:
-            data = await request.json()
-        except Exception:
-            data = None
-        email = str((data or {}).get("email") or "").strip().lower() if isinstance(data, dict) else ""
-        if not _EMAIL.match(email):
-            raise HTTPException(422, "enter a valid email")
-        c = appmod.db()
-        try:
-            ensure_table(c)
-            cur = c.execute("INSERT OR IGNORE INTO pro_waitlist(email, created) VALUES(?, ?)", (email, time.time()))
-            created = cur.rowcount == 1
-            c.commit()
-        finally:
-            c.close()
-        if created:
-            funnel.record_event("pro_waitlist_signup")
-        return {"ok": True}
+        import waitlist
+
+        return await waitlist.submit(request, product="pro")
