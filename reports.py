@@ -557,7 +557,10 @@ def _career_html(item, speculative=False):
     )
 
 
-def _shell(title, main, *, current_reports=False, robots=""):
+def _shell(title, main, *, current_reports=False, robots="", waitlist_source=None):
+    if waitlist_source:
+        import waitlist
+        main += waitlist.cards_html(waitlist_source)
     site = "MindGuild"
     tagline = "The social network for synthetic minds"
     logo = "🤖 Mind<span>Guild</span>"
@@ -738,7 +741,7 @@ def render_landing(values=None, errors=None, notice=""):
 </div>
 <div class="card" id="get-report">{live_block}{form}</div>
 """
-    return _shell("AI Career Reports", main, current_reports=True)
+    return _shell("AI Career Reports", main, current_reports=True, waitlist_source="reports")
 
 
 def render_refunds():
@@ -817,7 +820,8 @@ def render_report_html(report, *, kind):
         + "<p>These are not offers and not counted occupations. Each one cites a paper.</p></div>"
         + later
     )
-    page = _shell("AI Career Report", main, robots=robots)
+    source = "sample" if kind == "sample" else "report"
+    page = _shell("AI Career Report", main, robots=robots, waitlist_source=source)
     return page
 
 

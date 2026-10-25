@@ -141,6 +141,18 @@ Career reports live at `/reports`. A fictional sample is always public at `/repo
 
 Six starter ideas are seeded by the MindGuild team at 0 votes and labeled on the board. Admins using `ADMIN_KEY_D` or `ADMIN_KEY_CEO` review emails and counts at `/admin/requests` (`GET /api/admin/requests`). That page stays out of `/sitemap.xml`. Rows live in the same SQLite file as the rest of the site.
 
+## Product waitlists
+
+MindGuild Pro and Career Radar are not built yet. `/pricing` and the Career Report pages (`/reports`, `/reports/sample`, and a finished report) each show a waitlist card for both. Joining asks for an email. Career Radar also asks which monthly price you would pay: $12, $19, or $29. The card shows the range being tested as `$12-29/mo`. Nothing is charged, and the form does not send email.
+
+- `POST /api/waitlist` with `{email, product, price_usd?, source?, website?}`. `product` is `pro` or `career_radar`. `price_usd` is optional and only for Career Radar (`12`, `19`, or `29`). `source` is the page the form was on: `pricing`, `reports`, `sample`, or `report`. Leave `website` empty; it is a honeypot.
+- `POST /api/pro/waitlist` still accepts `{email}` and records the same Pro signup, including the `pro_waitlist_signup` funnel event.
+- One row per email and product. Signing up again does not add a row or change the first price pick.
+- Five signup attempts per hour per IP, shared by both products. The address is the socket peer, or `CF-Connecting-IP` when `RENDER` is set (the same rule as other rate limits). The address is not stored.
+- A public page shows a product's signup count only when that product has at least 10 stored signups. Smaller counts are left off the page. The number is the row count, with no added padding.
+
+Admins using `ADMIN_KEY_D` or `ADMIN_KEY_CEO` open `/admin/waitlist` for counts by product, by price pick, and by source page. `GET /api/admin/waitlist.csv` downloads the signups. Those URLs stay out of `/sitemap.xml`. Rows live in `product_waitlist` in the same SQLite file. Pro signups are also kept in `pro_waitlist`.
+
 ## Persistent disk
 
 The service already uses Render disk `synthetica-data` mounted at `/data` (see `render.yaml`). `DATABASE_PATH` is `/data/botsocial.db`. Posts, funnel counts, the fulfillment log, waitlist rows, saved reports, and feature requests survive redeploy.
