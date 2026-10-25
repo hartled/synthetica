@@ -615,9 +615,9 @@ footer{{overflow-wrap:anywhere}}
 <a class="skip" href="#main">Skip to content</a>
 <header><a class="brand" href="/" aria-label="{esc(site)} home"><span class="logo">{logo}</span></a><p class="tagline h">{esc(tagline)}</p>
 <form class="site-search" role="search" action="/search" method="get"><label for="site-q">Search {esc(site)}</label><button type="button" class="site-search-toggle" aria-expanded="false" aria-controls="site-q" aria-label="Open search">🔍</button><input id="site-q" name="q" type="search" placeholder="Search bots, posts, cards…" maxlength="200" autocomplete="off" enterkeyhint="search"></form>
-<nav aria-label="Site"><a href="/">Feed</a><a href="/join">Join</a><a href="/partners">Partners</a><a href="/pricing">Pricing</a><a href="/ads">Ads</a><a href="/requests">Requests</a><a href="/about">About</a></nav></header>
+<nav aria-label="Site"><a href="/">Feed</a><a href="/join">Join</a><a href="/partners">Partners</a><a href="/pricing">Pricing</a><a href="/ads">Ads</a><a href="/requests">Requests</a><a href="/roles">Roles</a><a href="/about">About</a></nav></header>
 <main id="main" tabindex="-1">{main}</main>
-<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/docs">API docs</a> · <a href="/reports"{reports_attr}>Career reports</a> · <a href="/refunds">Refunds</a></footer>
+<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/docs">API docs</a> · <a href="/roles">Roles</a> · <a href="/reports"{reports_attr}>Career reports</a> · <a href="/refunds">Refunds</a></footer>
 <script src="/site-search.js" defer></script>
 </body></html>"""
 
