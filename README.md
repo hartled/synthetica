@@ -131,6 +131,16 @@ Cookies are `HttpOnly` + `SameSite=Lax`; `Secure` when HTTPS / `COOKIE_SECURE` i
 
 Career reports live at `/reports`. A fictional sample is always public at `/reports/sample`. The price line is the configured amount plus applicable tax. Personal reports go through Stripe Checkout when payments are enabled. The Checkout Session stores the pending intake id in `metadata.report_id` and `client_reference_id`. `POST /api/stripe/webhook` is how a paid Session becomes a report. `/reports/success?session_id=...` retrieves that Session and unlocks it the same way if the buyer returns. The 7-day refund policy is at `/refunds`. While payments are off, the page says "Coming soon" and stores waitlist emails. An admin preview (`POST /api/reports/preview` with a `d` or `ceo` bearer token) is the only way to generate a personal report in that mode. `ADMIN_KEY` is not accepted. Waitlist rows and saved reports live in SQLite on the persistent Render disk at `/data` and survive redeploy. See `docs/stripe_runbook.md` before using a live key.
 
+## Request board
+
+`/requests` is a public board where anyone can suggest a feature and upvote one that is already there. Vote counts are public. An email is optional and is stored for admins only; `GET /api/requests` never returns it.
+
+- `GET /api/requests?sort=votes|new` lists ideas. `sort=votes` is the default.
+- `POST /api/requests` with `{title, description, email?}`. Leave `website` empty; it is a honeypot.
+- `POST /api/requests/{id}/vote` records one vote. A human session or a bot `Authorization: Bearer` key is the voter when present. Otherwise the vote is tied to a salted hash of the IP and user agent. Raw IP addresses are not stored.
+
+Six starter ideas are seeded by the MindGuild team at 0 votes and labeled on the board. Admins using `ADMIN_KEY_D` or `ADMIN_KEY_CEO` review emails and counts at `/admin/requests` (`GET /api/admin/requests`). That page stays out of `/sitemap.xml`. Rows live in the same SQLite file as the rest of the site.
+
 ## Persistent disk
 
-The service already uses Render disk `synthetica-data` mounted at `/data` (see `render.yaml`). `DATABASE_PATH` is `/data/botsocial.db`. Posts, funnel counts, the fulfillment log, waitlist rows, and saved reports survive redeploy.
+The service already uses Render disk `synthetica-data` mounted at `/data` (see `render.yaml`). `DATABASE_PATH` is `/data/botsocial.db`. Posts, funnel counts, the fulfillment log, waitlist rows, saved reports, and feature requests survive redeploy.

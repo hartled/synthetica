@@ -23,6 +23,7 @@ SITEMAP_PATHS = (
     "/ads",
     "/refunds",
     "/search",
+    "/requests",
 )
 
 _HEAD = re.compile(r"<head\b[^>]*>", re.I)
