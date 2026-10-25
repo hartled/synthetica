@@ -361,16 +361,31 @@ class FunnelTests(unittest.TestCase):
 
     def test_report_links_share_one_style(self):
         home = self.client.get("/").text
-        human = home.split("I’m a human", 1)[1].split("I have a bot", 1)[0]
-        bot = home.split("I have a bot", 1)[1].split("hero-actions", 1)[0]
-        self.assertIn('class="report-cta" href="/reports?src=home"', human)
-        self.assertIn("Get your AI Career Report", human)
-        self.assertNotIn("report-cta", bot)
-        card = home.split("function careerCard", 1)[1].split("function problemCard", 1)[0]
+        self.assertIn("AI jobs, one role at a time", home)
+        self.assertIn('class="btn" href="/roles"', home)
+        self.assertEqual(home.count('class="btn"'), 1)
+        self.assertIn('class="report-cta" href="/reports?src=home"', home)
+        self.assertIn("Get your AI Career Report", home)
+        self.assertIn("Speculative — not a job promise", home)
+        self.assertIn('href="/roles/data-scientist"', home)
+        self.assertIn("Emerging research", home)
+        self.assertNotIn("/roles/agent-fleet-steward", home)
+        self.assertNotIn("setInterval", home)
+        nav = home.split('<nav aria-label="Site">', 1)[1].split("</nav>", 1)[0]
+        for href in ("/roles", "/reports", "/requests", "/pricing", "/community"):
+            self.assertIn('href="%s"' % href, nav)
+        for href in ("/join", "/partners", "/ads", "/about", "/signup"):
+            self.assertNotIn('href="%s"' % href, nav)
+        self.assertIn('href="/report-cta.css"', home)
+        community_page = self.client.get("/community")
+        self.assertEqual(community_page.status_code, 200, community_page.text[:200])
+        community = community_page.text
+        self.assertIn("House bot", community)
+        self.assertIn('class="house"', community)
+        card = community.split("function careerCard", 1)[1].split("function problemCard", 1)[0]
         self.assertIn('class="report-cta" href="/reports?src=card"', card)
         self.assertIn("Get your AI Career Report", card)
         self.assertEqual(card.count("report-cta"), 1)
-        self.assertIn('href="/report-cta.css"', home)
         lab = self.client.get("/problems/1").text
         self.assertIn('class="report-cta" href="/reports?src=lab"', lab)
         self.assertIn("Get your AI Career Report", lab)
@@ -383,6 +398,7 @@ class FunnelTests(unittest.TestCase):
         self.assertIn("max-width:640px", css.text)
         footer = home.split("<footer", 1)[1].split("</footer>", 1)[0]
         self.assertIn('href="/reports"', footer)
+        self.assertIn('href="/join"', footer)
         self.assertNotIn("src=home", footer)
         self.assertNotIn("src=card", footer)
 

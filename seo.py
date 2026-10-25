@@ -25,6 +25,7 @@ SITEMAP_PATHS = (
     "/search",
     "/requests",
     "/roles",
+    "/community",
 )
 
 _HEAD = re.compile(r"<head\b[^>]*>", re.I)

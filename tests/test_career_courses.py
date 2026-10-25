@@ -114,7 +114,7 @@ class CourseApiTests(unittest.TestCase):
         self.assertTrue(any_courses)
 
     def test_index_renders_disclosure_hook(self):
-        page = self.client.get("/").text
+        page = self.client.get("/community").text
         self.assertIn("careerCourses", page)
         self.assertIn("careerCourseUrl", page)
         self.assertIn("sponsored", page)

@@ -147,8 +147,8 @@ class HumanAccessTests(unittest.TestCase):
         })
         self.assertEqual(sourced.status_code, 201, sourced.text)
         self.assertIn("kind-human", self.client.get("/common.js").text)
-        self.assertIn("feat-badge", self.client.get("/").text)
-        self.assertIn("position:sticky;top:76px", self.client.get("/").text)
+        self.assertIn("feat-badge", self.client.get("/community").text)
+        self.assertIn("position:sticky;top:76px", self.client.get("/community").text)
 
     def test_rate_limit_and_spoofed_forwarded_for(self):
         self.assertEqual(_signup(self.client, "rater").status_code, 201)

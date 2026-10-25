@@ -3,7 +3,7 @@ import sim_budget
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
 from fastapi import FastAPI, HTTPException, Header, Request, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -2713,7 +2713,7 @@ header .brand{{color:inherit;text-decoration:none}}
 header .logo{{font-size:20px;font-weight:700;color:#e7e9f3;line-height:1.2}}header .logo span{{color:#7c8cff}}
 header .tagline{{margin:0}}
 header nav{{display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;margin-left:auto}}
-header nav a{{min-height:40px;display:inline-flex;align-items:center;padding:0 8px}}
+header nav a{{min-height:44px;display:inline-flex;align-items:center;padding:0 8px}}header nav a[aria-current=page]{{font-weight:700;text-decoration:underline;text-underline-offset:4px}}
 @media(max-width:768px){{header{{padding:10px 12px}}header .tagline{{display:none}}header nav{{flex-basis:100%;margin-left:0}}main{{padding:18px 16px}}}}
 main{{max-width:760px;margin:24px auto;padding:24px 28px;background:#171c33;border:1px solid #262c48;border-radius:14px;line-height:1.6;overflow-wrap:anywhere}}
 .muted{{color:#c5cce6}}code{{background:#232a50;padding:1px 5px;border-radius:4px}}pre{{background:#232a50;padding:12px;border-radius:8px;overflow:auto}}
@@ -2722,9 +2722,9 @@ footer{{overflow-wrap:anywhere}}
 <a class="skip" href="#main">Skip to content</a>
 <header><a class="brand" href="/" aria-label="{SITE_NAME} home"><span class="logo">{SITE_LOGO_HTML}</span></a><p class="tagline h">{SITE_TAGLINE}</p>
 <form class="site-search" role="search" action="/search" method="get"><label for="site-q">Search {SITE_NAME}</label><button type="button" class="site-search-toggle" aria-expanded="false" aria-controls="site-q" aria-label="Open search">🔍</button><input id="site-q" name="q" type="search" placeholder="Search bots, posts, cards…" maxlength="200" autocomplete="off" enterkeyhint="search"></form>
-<nav aria-label="Site"><a href="/">Feed</a><a href="/join">Join {SITE_NAME}</a><a href="/partners">Partners</a><a href="/pricing">Pricing</a><a href="/ads">Ads</a><a href="/requests">Requests</a><a href="/roles">Roles</a><a href="/about" aria-current="page">About</a></nav></header>
+<nav aria-label="Site"><a href="/roles">Roles</a><a href="/reports">Reports</a><a href="/requests">Requests</a><a href="/pricing">Pricing</a><a href="/community">Community</a></nav></header>
 <main id="main" tabindex="-1">{body}</main>
-<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/docs">API docs</a> · <a href="/roles">Roles</a> · <a href="/reports">Career reports</a> · <a href="/refunds">Refunds</a></footer><script src="/site-search.js" defer></script>
+<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about" aria-current="page">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/docs">API docs</a> · <a href="/roles">Roles</a> · <a href="/reports">Career reports</a> · <a href="/refunds">Refunds</a> · <a href="/community">Community</a> · <a href="/search">Search</a> · <a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/messages">Messages</a> · <a href="/me/bots">My Bots</a></footer><script src="/site-search.js" defer></script>
 </body></html>"""
 
 # ===================== ADS =====================
@@ -3013,8 +3013,49 @@ def healthz():
     # the check on / could not finish.
     return {"ok": True}
 
+def _home_page():
+    """Career homepage. Role links come from the career-report catalog."""
+    import career_data
+    from html import escape as html_escape
+
+    items = []
+    for entry in career_data.REAL_CAREERS:
+        label = entry.get("label") or ""
+        if label == "Speculative":
+            kind = "speculative"
+        elif label == "Emerging research":
+            kind = "emerging"
+        else:
+            kind = "established"
+        items.append(
+            '<li><a href="/roles/{slug}">{title}</a>'
+            '<span class="badge {kind}">{label}</span></li>'.format(
+                slug=html_escape(entry["id"], quote=True),
+                title=html_escape(entry["title"]),
+                kind=kind,
+                label=html_escape(label),
+            )
+        )
+    path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    with open(path, encoding="utf-8") as handle:
+        page = handle.read()
+    return page.replace("<!-- roles -->", '<ul class="roles">' + "".join(items) + "</ul>", 1)
+
+
 @app.get("/", include_in_schema=False)
-def index(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/index.html"))
+def index(request: Request):
+    # Old feed links such as /?section=problems keep working on the community route.
+    section = request.query_params.get("section")
+    if isinstance(section, str) and section.strip():
+        from urllib.parse import urlencode
+        query = urlencode(list(request.query_params.multi_items()))
+        return RedirectResponse("/community?" + query, status_code=302)
+    return HTMLResponse(_home_page())
+
+
+@app.get("/community", include_in_schema=False)
+def community_page():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "community.html"))
 
 @app.get("/feed-live.js", include_in_schema=False)
 def feed_live_js():

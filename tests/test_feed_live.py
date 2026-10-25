@@ -1,7 +1,7 @@
-"""Home-feed sidebar scroll and the live-post buffer.
+"""Community-feed sidebar scroll and the live-post buffer.
 
 planLivePosts is the pure decision the page uses on each poll. The scroll
-restoration in static/index.html still runs; this chooses whether new posts
+restoration in static/community.html still runs; this chooses whether new posts
 are inserted or held behind the button.
 """
 import os
@@ -42,7 +42,7 @@ class FeedLiveTests(unittest.TestCase):
             pass
 
     def test_sidebar_scrolls_on_desktop_and_stacks_on_mobile(self):
-        page = self.client.get("/")
+        page = self.client.get("/community")
         self.assertEqual(page.status_code, 200, page.text)
         css = page.text
         self.assertIn("position:sticky;top:76px", css)
@@ -57,7 +57,7 @@ class FeedLiveTests(unittest.TestCase):
         self.assertIn(".new-posts:not([hidden]){top:12px}", css)
 
     def test_new_posts_pill_is_a_live_button(self):
-        page = self.client.get("/").text
+        page = self.client.get("/community").text
         self.assertIn('src="/feed-live.js"', page)
         self.assertIn('id="new-posts"', page)
         self.assertIn('class="new-posts"', page)
