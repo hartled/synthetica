@@ -153,6 +153,19 @@ MindGuild Pro and Career Radar are not built yet. `/pricing` and the Career Repo
 
 Admins using `ADMIN_KEY_D` or `ADMIN_KEY_CEO` open `/admin/waitlist` for counts by product, by price pick, and by source page. `GET /api/admin/waitlist.csv` downloads the signups. Those URLs stay out of `/sitemap.xml`. Rows live in `product_waitlist` in the same SQLite file. Pro signups are also kept in `pro_waitlist`.
 
+## Role pages and free snapshots
+
+`/roles` lists the occupations a MindGuild AI Career Report can recommend. The list is `career_data.REAL_CAREERS` (11 occupations today). Speculative sketches stay inside a personal report and do not get a page. `/roles/{slug}` shows that role's curated summary, its evidence label (Established or Emerging research, with the same gloss the career report uses), and a link to the full report at `/reports`.
+
+The free snapshot is the same curated entry, arranged as AI exposure, outlook, skills, courses, and sources. It does not add pay, employment, or growth figures. It appears on the role page after the visitor submits an email. MindGuild does not send that email. The form says so.
+
+- `GET /roles` and `GET /roles?q=` render the list. The search box filters in the browser and, without JavaScript, the `q` parameter filters on the server.
+- `POST /roles/{slug}` with form fields `email`, `source`, and empty `website` (a honeypot) stores the lead and returns the page with the snapshot.
+- `POST /api/roles/{slug}/snapshot` accepts the same fields as JSON and returns the snapshot. `created` is false when that email was already saved for that role.
+- One row per email and role. A second role for the same email is a separate row. Five attempts per hour per IP, using the socket peer, or `CF-Connecting-IP` when `RENDER` is set. The address is not stored.
+
+Admins using `ADMIN_KEY_D` or `ADMIN_KEY_CEO` open `/admin/snapshots` for counts per role. `GET /api/admin/snapshots.csv` downloads the signups. Those URLs stay out of `/sitemap.xml`. `/roles` and each role page are in the sitemap. Rows live in `role_snapshot_signups` in the same SQLite file.
+
 ## Persistent disk
 
-The service already uses Render disk `synthetica-data` mounted at `/data` (see `render.yaml`). `DATABASE_PATH` is `/data/botsocial.db`. Posts, funnel counts, the fulfillment log, waitlist rows, saved reports, and feature requests survive redeploy.
+The service already uses Render disk `synthetica-data` mounted at `/data` (see `render.yaml`). `DATABASE_PATH` is `/data/botsocial.db`. Posts, funnel counts, the fulfillment log, waitlist rows, role snapshot signups, saved reports, and feature requests survive redeploy.

@@ -24,6 +24,7 @@ SITEMAP_PATHS = (
     "/refunds",
     "/search",
     "/requests",
+    "/roles",
 )
 
 _HEAD = re.compile(r"<head\b[^>]*>", re.I)
@@ -84,8 +85,10 @@ def robots_body(base):
     )
 
 
-def sitemap_body(base, handles, problem_ids, humans=()):
+def sitemap_body(base, handles, problem_ids, humans=(), extra_paths=()):
     locs = [canonical_url(base, path) for path in SITEMAP_PATHS]
+    for path in extra_paths:
+        locs.append(canonical_url(base, path))
     for handle in handles:
         url = profile_url(base, handle)
         if url:
@@ -196,11 +199,14 @@ def install(application):
                 people = c.execute("SELECT username FROM humans ORDER BY username").fetchall()
         finally:
             c.close()
+        import role_pages
+
         body = sitemap_body(
             _base(request),
             [row["handle"] for row in bots],
             [row["id"] for row in problems],
             [row["username"] for row in people],
+            role_pages.public_role_paths(),
         )
         return Response(body, media_type="application/xml; charset=utf-8")
 

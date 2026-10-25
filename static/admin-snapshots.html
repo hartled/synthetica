@@ -1,0 +1,148 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Role snapshots · MindGuild admin</title>
+<style>
+*{box-sizing:border-box}html{color-scheme:dark}body{margin:0;font-family:system-ui,sans-serif;background:#0f1220;color:#e7e9f3}
+main{max-width:980px;margin:28px auto;padding:0 16px 48px}
+.card{background:#171c33;border:1px solid #262c48;border-radius:14px;padding:18px;margin-bottom:14px;overflow-x:auto}
+input,button{font:inherit}input{width:100%;background:#0b0e1a;color:#e7e9f3;border:1px solid #39407a;border-radius:8px;padding:10px;margin:6px 0 12px;min-height:44px}
+button{background:#7c8cff;color:#0f1220;border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer;min-height:44px;margin-right:8px}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid #262c48;padding:8px;text-align:left;vertical-align:top}
+th{color:#c5cce6;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+.err{color:#ffb4c0;min-height:18px;font-size:13px}.ok{color:#9be5c4;font-size:13px}
+.h{color:#c5cce6;font-size:14px;line-height:1.5}
+a{color:#b7c4ff}
+.totals{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0 0}
+.totals div{background:#0b0e1a;border:1px solid #262c48;border-radius:12px;padding:12px 14px;min-width:140px}
+.totals strong{display:block;font-size:28px;color:#9aa8ff}
+@media(max-width:700px){table,tbody,tr,th,td{display:block}thead{display:none}td{border-bottom:0;padding:4px 0}tr{border-bottom:1px solid #262c48;padding:10px 0}}
+</style></head><body>
+<main>
+<h1>Role snapshots</h1>
+<p class="h">Private admin view. Emails are listed here and are not on the public role pages. MindGuild shows the snapshot on the role page. No email is sent. This page is not in the sitemap. Raw IP addresses are not stored.</p>
+<div class="card">
+<label for="key">Admin key</label>
+<input id="key" type="password" autocomplete="off" placeholder="Bearer token">
+<button type="button" id="load">Show signups</button>
+<button type="button" id="csv">Download CSV</button>
+<div class="err" id="msg" role="status"></div>
+</div>
+<div class="card">
+<h2>Signups per role</h2>
+<div class="totals" id="totals"></div>
+<p id="empty-totals" class="h">Paste an admin key to load counts.</p>
+<table>
+<thead><tr><th>Role</th><th>Signups</th></tr></thead>
+<tbody id="counts"></tbody>
+</table>
+</div>
+<div class="card">
+<h2>Signups</h2>
+<table>
+<thead><tr><th>When (UTC)</th><th>Role</th><th>Email</th><th>Source</th></tr></thead>
+<tbody id="rows"></tbody>
+</table>
+<p id="empty-rows" class="h" hidden>No snapshot signups yet.</p>
+</div>
+<p><a href="/admin">Moderation</a> · <a href="/admin/waitlist">Waitlists</a> · <a href="/admin/requests">Feature requests</a> · <a href="/roles">Roles</a></p>
+</main>
+<script>
+const keyEl = document.getElementById("key");
+const msg = document.getElementById("msg");
+keyEl.value = sessionStorage.getItem("mg_admin") || "";
+
+function say(text, ok) {
+  msg.textContent = text;
+  msg.className = ok ? "ok" : "err";
+}
+
+function cell(text) {
+  const td = document.createElement("td");
+  td.textContent = text == null || text === "" ? "—" : String(text);
+  return td;
+}
+
+function when(ts) {
+  if (typeof ts !== "number") return "—";
+  return new Date(ts * 1000).toISOString().replace("T", " ").replace(".000Z", " UTC").replace("Z", " UTC");
+}
+
+function render(data) {
+  const totals = document.getElementById("totals");
+  totals.replaceChildren();
+  const box = document.createElement("div");
+  const strong = document.createElement("strong");
+  strong.textContent = String(data.total == null ? 0 : data.total);
+  const label = document.createElement("span");
+  label.textContent = "Total signups";
+  box.appendChild(strong);
+  box.appendChild(label);
+  totals.appendChild(box);
+  document.getElementById("empty-totals").hidden = true;
+
+  const counts = document.getElementById("counts");
+  counts.replaceChildren();
+  (data.counts || []).forEach(function (item) {
+    const tr = document.createElement("tr");
+    tr.appendChild(cell(item.title || item.role_id));
+    tr.appendChild(cell(item.signups));
+    counts.appendChild(tr);
+  });
+
+  const rows = document.getElementById("rows");
+  rows.replaceChildren();
+  const list = data.signups || [];
+  document.getElementById("empty-rows").hidden = list.length > 0;
+  list.forEach(function (item) {
+    const tr = document.createElement("tr");
+    tr.appendChild(cell(when(item.created)));
+    tr.appendChild(cell(item.title || item.role_id));
+    tr.appendChild(cell(item.email));
+    tr.appendChild(cell(item.source));
+    rows.appendChild(tr);
+  });
+}
+
+function authHeader() {
+  return {Authorization: "Bearer " + keyEl.value.trim()};
+}
+
+async function listed() {
+  const key = keyEl.value.trim();
+  say("", true);
+  if (!key) { say("Paste an admin key first.", false); return; }
+  sessionStorage.setItem("mg_admin", key);
+  const res = await fetch("/api/admin/snapshots", {headers: authHeader()});
+  const data = await res.json().catch(function () { return {}; });
+  if (!res.ok) {
+    say(typeof data.detail === "string" ? data.detail : "Request failed", false);
+    return;
+  }
+  render(data);
+  say("Loaded " + (data.signups || []).length + " signups.", true);
+}
+
+async function downloadCsv() {
+  const key = keyEl.value.trim();
+  if (!key) { say("Paste an admin key first.", false); return; }
+  sessionStorage.setItem("mg_admin", key);
+  const res = await fetch("/api/admin/snapshots.csv", {headers: authHeader()});
+  if (!res.ok) {
+    const data = await res.json().catch(function () { return {}; });
+    say(typeof data.detail === "string" ? data.detail : "Could not download CSV", false);
+    return;
+  }
+  const blob = await res.blob();
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "mindguild-role-snapshots.csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+  say("CSV downloaded.", true);
+}
+
+document.getElementById("load").addEventListener("click", listed);
+document.getElementById("csv").addEventListener("click", downloadCsv);
+if (keyEl.value) listed();
+</script>
+</body></html>
