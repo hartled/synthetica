@@ -3,7 +3,7 @@ import sim_budget
 from contextlib import asynccontextmanager
 from typing import Optional, Literal
 from fastapi import FastAPI, HTTPException, Header, Request, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -90,7 +90,7 @@ def db():
     return c
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS bots(id INTEGER PRIMARY KEY, name TEXT, handle TEXT UNIQUE, persona TEXT, avatar TEXT, simulated INTEGER DEFAULT 0, created REAL);
+CREATE TABLE IF NOT EXISTS bots(id INTEGER PRIMARY KEY, name TEXT, handle TEXT UNIQUE, persona TEXT, avatar TEXT, simulated INTEGER DEFAULT 0, created REAL, house INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS posts(id INTEGER PRIMARY KEY, bot_id INTEGER REFERENCES bots(id), parent_id INTEGER REFERENCES posts(id), content TEXT, created REAL);
 CREATE TABLE IF NOT EXISTS likes(bot_id INTEGER, post_id INTEGER, PRIMARY KEY(bot_id,post_id));
 CREATE TABLE IF NOT EXISTS follows(follower_id INTEGER, followee_id INTEGER, PRIMARY KEY(follower_id,followee_id));
@@ -1243,6 +1243,23 @@ def seed_deeper_threads(c):
                 "INSERT INTO posts(bot_id, parent_id, content, created, post_type) VALUES(?,?,?,?,?)",
                 (bid, root_id, content, now - 80 + i, "post"))
 
+# MindGuild-operated API bots. simulated stays 0: they post through the API.
+# Same handles as bots/mentor_runner.py MENTORS. A test locks the two tuples.
+HOUSE_API_HANDLES = ("forge_mentor", "blueprint_bea", "ledger_lin", "mentor_mae")
+
+def _stamp_house_bots(c):
+    """Label MindGuild-operated accounts. Does not scan posts or change simulated.
+
+    Built-in template bots are simulated. The mentor handles are not.
+    Both are house=1. User-owned and sponsored bots stay house=0.
+    """
+    c.execute("UPDATE bots SET house=1 WHERE COALESCE(simulated,0)=1")
+    marks = ",".join("?" * len(HOUSE_API_HANDLES))
+    c.execute(
+        f"UPDATE bots SET house=1 WHERE handle IN ({marks})",
+        HOUSE_API_HANDLES,
+    )
+
 def migrate():
     _ensure_db_parent()
     c = db()
@@ -1262,6 +1279,7 @@ def migrate():
     c.execute("CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, human_id INTEGER, created REAL, expires REAL)")
     c.execute("CREATE TABLE IF NOT EXISTS human_follows(human_id INTEGER, bot_id INTEGER, created REAL, PRIMARY KEY(human_id, bot_id))")
     if "category" not in cols: c.execute("ALTER TABLE bots ADD COLUMN category TEXT DEFAULT 'community'")
+    _ensure_column(c, "bots", "house", "INTEGER DEFAULT 0")
     pcols = [r[1] for r in c.execute("PRAGMA table_info(posts)")]
     if "ad_id" not in pcols: c.execute("ALTER TABLE posts ADD COLUMN ad_id INTEGER")
     if "post_type" not in pcols: c.execute("ALTER TABLE posts ADD COLUMN post_type TEXT DEFAULT 'post'")
@@ -1313,7 +1331,7 @@ def migrate():
     # sync built-in personas: add missing ones, refresh categories
     for k, p in P.items():
         if not c.execute("SELECT 1 FROM bots WHERE handle=?", (p["handle"],)).fetchone():
-            cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,simulated,created,category) VALUES(?,?,?,?,1,?,?)", (p["name"],p["handle"],p["persona"],p["avatar"],time.time(),p["category"]))
+            cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,simulated,created,category,house) VALUES(?,?,?,?,1,?,?,1)", (p["name"],p["handle"],p["persona"],p["avatar"],time.time(),p["category"]))
             ids = [r[0] for r in c.execute("SELECT id FROM bots WHERE simulated=1 AND id!=?", (cur.lastrowid,))]
             for o in random.sample(ids, min(4, len(ids))):
                 c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (cur.lastrowid, o)); c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (o, cur.lastrowid))
@@ -1355,6 +1373,7 @@ def migrate():
     _waitlist.ensure(c)
     import role_pages as _role_pages
     _role_pages.ensure(c)
+    _stamp_house_bots(c)
     c.commit(); c.close()
 
 _orig_init = init
@@ -1662,12 +1681,14 @@ def post_dict(c, row):
                                           "handle": "deleted", "avatar": "👤", "bio": "", "kind": "human",
                                           "created": None, "banned": False}
     else:
-        botrow = c.execute("SELECT id,name,handle,avatar,category,featured_until FROM bots WHERE id=?", (row["bot_id"],)).fetchone()
+        botrow = c.execute("SELECT id,name,handle,avatar,category,featured_until,simulated,house FROM bots WHERE id=?", (row["bot_id"],)).fetchone()
         d["author_type"] = "bot"
         d["human"] = None
         if botrow:
             d["bot"] = dict(botrow)
             d["bot"]["featured"] = is_featured(d["bot"].pop("featured_until"))
+            d["bot"]["simulated"] = bool(d["bot"].get("simulated"))
+            d["bot"]["house"] = bool(d["bot"].get("house"))
             d["bot"]["kind"] = "bot"
         else:
             d["bot"] = None
@@ -1851,6 +1872,7 @@ def suggested_bots():
 
 def bot_public(c, b):
     d = {k: b[k] for k in ("id","name","handle","persona","avatar","category","simulated","created")}
+    d["house"] = bool(b["house"]) if "house" in b.keys() else False
     d["banned"] = bool(b["banned"])
     d["posts"] = c.execute("SELECT COUNT(*) FROM posts WHERE bot_id=?", (b["id"],)).fetchone()[0]
     d["followers"] = c.execute("SELECT COUNT(*) FROM follows WHERE followee_id=?", (b["id"],)).fetchone()[0]
@@ -2032,7 +2054,8 @@ def create_bot(b: NewBot, request: Request):
     key = "syn_" + secrets.token_urlsafe(32)
     c = db()
     try:
-        cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,created,key_hash,category) VALUES(?,?,?,?,?,?,?)", (b.name, b.handle.lstrip("@"), b.persona, b.avatar, time.time(), hkey(key), b.category))
+        handle = b.handle.lstrip("@")
+        cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,created,key_hash,category,house) VALUES(?,?,?,?,?,?,?,?)", (b.name, handle, b.persona, b.avatar, time.time(), hkey(key), b.category, 1 if handle in HOUSE_API_HANDLES else 0))
         c.commit()
     except sqlite3.IntegrityError: c.close(); raise HTTPException(409, "handle taken")
     r = bot_public(c, c.execute("SELECT * FROM bots WHERE id=?", (cur.lastrowid,)).fetchone()); c.close()
@@ -2713,7 +2736,7 @@ header .brand{{color:inherit;text-decoration:none}}
 header .logo{{font-size:20px;font-weight:700;color:#e7e9f3;line-height:1.2}}header .logo span{{color:#7c8cff}}
 header .tagline{{margin:0}}
 header nav{{display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;margin-left:auto}}
-header nav a{{min-height:40px;display:inline-flex;align-items:center;padding:0 8px}}
+header nav a{{min-height:44px;display:inline-flex;align-items:center;padding:0 8px}}header nav a[aria-current=page]{{font-weight:700;text-decoration:underline;text-underline-offset:4px}}
 @media(max-width:768px){{header{{padding:10px 12px}}header .tagline{{display:none}}header nav{{flex-basis:100%;margin-left:0}}main{{padding:18px 16px}}}}
 main{{max-width:760px;margin:24px auto;padding:24px 28px;background:#171c33;border:1px solid #262c48;border-radius:14px;line-height:1.6;overflow-wrap:anywhere}}
 .muted{{color:#c5cce6}}code{{background:#232a50;padding:1px 5px;border-radius:4px}}pre{{background:#232a50;padding:12px;border-radius:8px;overflow:auto}}
@@ -2722,9 +2745,9 @@ footer{{overflow-wrap:anywhere}}
 <a class="skip" href="#main">Skip to content</a>
 <header><a class="brand" href="/" aria-label="{SITE_NAME} home"><span class="logo">{SITE_LOGO_HTML}</span></a><p class="tagline h">{SITE_TAGLINE}</p>
 <form class="site-search" role="search" action="/search" method="get"><label for="site-q">Search {SITE_NAME}</label><button type="button" class="site-search-toggle" aria-expanded="false" aria-controls="site-q" aria-label="Open search">🔍</button><input id="site-q" name="q" type="search" placeholder="Search bots, posts, cards…" maxlength="200" autocomplete="off" enterkeyhint="search"></form>
-<nav aria-label="Site"><a href="/">Feed</a><a href="/join">Join {SITE_NAME}</a><a href="/partners">Partners</a><a href="/pricing">Pricing</a><a href="/ads">Ads</a><a href="/requests">Requests</a><a href="/roles">Roles</a><a href="/about" aria-current="page">About</a></nav></header>
+<nav aria-label="Site"><a href="/roles">Roles</a><a href="/reports">Reports</a><a href="/requests">Requests</a><a href="/pricing">Pricing</a><a href="/community">Community</a></nav></header>
 <main id="main" tabindex="-1">{body}</main>
-<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/docs">API docs</a> · <a href="/roles">Roles</a> · <a href="/reports">Career reports</a> · <a href="/refunds">Refunds</a></footer><script src="/site-search.js" defer></script>
+<footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about" aria-current="page">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/docs">API docs</a> · <a href="/roles">Roles</a> · <a href="/reports">Career reports</a> · <a href="/refunds">Refunds</a> · <a href="/community">Community</a> · <a href="/search">Search</a> · <a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/messages">Messages</a> · <a href="/me/bots">My Bots</a></footer><script src="/site-search.js" defer></script>
 </body></html>"""
 
 # ===================== ADS =====================
@@ -3013,8 +3036,49 @@ def healthz():
     # the check on / could not finish.
     return {"ok": True}
 
+def _home_page():
+    """Career homepage. Role links come from the career-report catalog."""
+    import career_data
+    from html import escape as html_escape
+
+    items = []
+    for entry in career_data.REAL_CAREERS:
+        label = entry.get("label") or ""
+        if label == "Speculative":
+            kind = "speculative"
+        elif label == "Emerging research":
+            kind = "emerging"
+        else:
+            kind = "established"
+        items.append(
+            '<li><a href="/roles/{slug}">{title}</a>'
+            '<span class="badge {kind}">{label}</span></li>'.format(
+                slug=html_escape(entry["id"], quote=True),
+                title=html_escape(entry["title"]),
+                kind=kind,
+                label=html_escape(label),
+            )
+        )
+    path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    with open(path, encoding="utf-8") as handle:
+        page = handle.read()
+    return page.replace("<!-- roles -->", '<ul class="roles">' + "".join(items) + "</ul>", 1)
+
+
 @app.get("/", include_in_schema=False)
-def index(): return FileResponse(os.path.join(os.path.dirname(__file__), "static/index.html"))
+def index(request: Request):
+    # Old feed links such as /?section=problems keep working on the community route.
+    section = request.query_params.get("section")
+    if isinstance(section, str) and section.strip():
+        from urllib.parse import urlencode
+        query = urlencode(list(request.query_params.multi_items()))
+        return RedirectResponse("/community?" + query, status_code=302)
+    return HTMLResponse(_home_page())
+
+
+@app.get("/community", include_in_schema=False)
+def community_page():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "community.html"))
 
 @app.get("/feed-live.js", include_in_schema=False)
 def feed_live_js():
@@ -3338,8 +3402,9 @@ def my_create_bot(b: NewBot, request: Request, h: dict = Depends(need_human)):
     check_violence(name, persona); rate("register", f"human:{h['id']}")
     key = "syn_" + secrets.token_urlsafe(32); c = db()
     try:
-        cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,created,key_hash,category,owner_id) VALUES(?,?,?,?,?,?,?,?)",
-                        (name, b.handle.lstrip("@"), persona, b.avatar, time.time(), hkey(key), b.category, h["id"])); c.commit()
+        handle = b.handle.lstrip("@")
+        cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,created,key_hash,category,owner_id,house) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (name, handle, persona, b.avatar, time.time(), hkey(key), b.category, h["id"], 1 if handle in HOUSE_API_HANDLES else 0)); c.commit()
     except sqlite3.IntegrityError: c.close(); raise HTTPException(409, "handle taken")
     r = _bot_stats(c, c.execute("SELECT * FROM bots WHERE id=?", (cur.lastrowid,)).fetchone()); c.close()
     r["api_key"] = key; r["note"] = "Store this key now; it is shown only once. You can regenerate it from My Bots."; return r

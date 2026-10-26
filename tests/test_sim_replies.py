@@ -214,8 +214,9 @@ class SimReplyTests(unittest.TestCase):
         self.assertEqual(reply.json()["content"], "a real reply, not a template")
         c = app.db()
         try:
-            bot = c.execute("SELECT id, simulated FROM bots WHERE handle=?", (handle,)).fetchone()
+            bot = c.execute("SELECT id, simulated, house FROM bots WHERE handle=?", (handle,)).fetchone()
             self.assertEqual(bot["simulated"], 0)
+            self.assertEqual(bot["house"], 0)
             before = _counts(c, 0)
             with mock.patch("app.random.random", return_value=0.0):
                 for _ in range(15):
@@ -224,5 +225,61 @@ class SimReplyTests(unittest.TestCase):
             self.assertEqual(_sim_on_sim(c), [])
             stored = c.execute("SELECT content FROM posts WHERE id=?", (reply.json()["id"],)).fetchone()["content"]
             self.assertEqual(stored, "a real reply, not a template")
+            self.assertFalse(created.json()["house"])
         finally:
             c.close()
+
+    def test_mentor_handles_are_house_but_not_simulated(self):
+        from bots.mentor_runner import MENTORS
+        self.assertEqual(app.HOUSE_API_HANDLES, MENTORS)
+        c = app.db()
+        try:
+            ids = {handle: _ensure_real(c, handle, handle) for handle in MENTORS}
+            _ensure_real(c, "not_a_house_bot", "Stranger")
+            c.commit()
+        finally:
+            c.close()
+        app.migrate()
+        app.migrate()
+        c = app.db()
+        try:
+            for handle in MENTORS:
+                row = c.execute(
+                    "SELECT simulated, COALESCE(house,0) house FROM bots WHERE handle=?",
+                    (handle,),
+                ).fetchone()
+                self.assertEqual(row["simulated"], 0, handle)
+                self.assertEqual(row["house"], 1, handle)
+            stranger = c.execute(
+                "SELECT simulated, COALESCE(house,0) house FROM bots WHERE handle=?",
+                ("not_a_house_bot",),
+            ).fetchone()
+            self.assertEqual(stranger["simulated"], 0)
+            self.assertEqual(stranger["house"], 0)
+            built = c.execute(
+                "SELECT handle, simulated, COALESCE(house,0) house FROM bots WHERE simulated=1 LIMIT 1"
+            ).fetchone()
+            self.assertEqual(built["house"], 1)
+            built_handle = built["handle"]
+            sponsored = c.execute(
+                "SELECT simulated, COALESCE(house,0) house FROM bots WHERE handle='sponsored'"
+            ).fetchone()
+            self.assertIsNotNone(sponsored)
+            self.assertEqual(sponsored["simulated"], 0)
+            self.assertEqual(sponsored["house"], 0)
+            pid = _insert_post(c, ids["forge_mentor"], "mentor note via the api")
+            c.commit()
+        finally:
+            c.close()
+        bots = {b["handle"]: b for b in self.client.get("/api/bots").json()}
+        self.assertTrue(bots["forge_mentor"]["house"])
+        self.assertFalse(bots["forge_mentor"]["simulated"])
+        self.assertTrue(bots[built_handle]["house"])
+        self.assertTrue(bots[built_handle]["simulated"])
+        self.assertFalse(bots["sponsored"]["house"])
+        self.assertFalse(bots["not_a_house_bot"]["house"])
+        feed = self.client.get("/api/feed?handle=forge_mentor").json()
+        mine = [p for p in feed if p["id"] == pid]
+        self.assertEqual(len(mine), 1)
+        self.assertTrue(mine[0]["bot"]["house"])
+        self.assertFalse(mine[0]["bot"]["simulated"])
