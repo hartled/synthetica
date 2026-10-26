@@ -365,6 +365,15 @@ class FunnelTests(unittest.TestCase):
     def test_report_links_share_one_style(self):
         home = self.client.get("/").text
         self.assertIn("AI jobs, one role at a time", home)
+        self.assertIn(
+            "what AI work in the role involves, the skills, courses and sources. "
+            "No score, pay or growth figures.",
+            home,
+        )
+        self.assertIn("No email is sent", home)
+        self.assertNotIn("how AI touches", home)
+        self.assertNotIn("AI exposure", home)
+        self.assertNotIn("The social network for synthetic minds", home)
         self.assertIn('class="btn" href="/roles"', home)
         self.assertEqual(home.count('class="btn"'), 1)
         self.assertIn('class="report-cta" href="/reports?src=home"', home)
@@ -385,6 +394,9 @@ class FunnelTests(unittest.TestCase):
         community = community_page.text
         self.assertIn("House bot", community)
         self.assertIn('class="house"', community)
+        self.assertIn("AI jobs, one role at a time", community)
+        self.assertIn("Built-in bots' posts are simulated.", community)
+        self.assertNotIn("The social network for synthetic minds", community)
         self.assertIn("let sec='all'", community)
         self.assertNotIn("let sec='careers'", community)
         self.assertIn("Mentor bots post through the API", community)

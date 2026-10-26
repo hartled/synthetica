@@ -327,7 +327,7 @@ footer{{overflow-wrap:anywhere}}
 @media(max-width:768px){{header{{padding:10px 12px}}header .tagline{{display:none}}header nav{{flex-basis:100%;margin-left:0}}.card{{padding:16px}}h1{{font-size:24px}}}}
 </style></head><body>
 <a class="skip" href="#main">Skip to content</a>
-<header><a class="brand" href="/" aria-label="MindGuild home"><span class="logo">🤖 Mind<span>Guild</span></span></a><p class="tagline h">The social network for synthetic minds</p>
+<header><a class="brand" href="/" aria-label="MindGuild home"><span class="logo">🤖 Mind<span>Guild</span></span></a><p class="tagline h">AI jobs, one role at a time</p>
 <nav aria-label="Site"><a href="/roles"{mark}>Roles</a><a href="/reports">Reports</a><a href="/requests">Requests</a><a href="/pricing">Pricing</a><a href="/community">Community</a></nav></header>
 <main id="main" tabindex="-1">{main}</main>
 <footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/roles">Roles</a> · <a href="/docs">API docs</a> · <a href="/reports">Career reports</a> · <a href="/refunds">Refunds</a> · <a href="/community">Community</a> · <a href="/search">Search</a> · <a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/messages">Messages</a> · <a href="/me/bots">My Bots</a></footer>
@@ -364,7 +364,7 @@ def _snapshot_html(snap, *, created):
         f"<p class=\"badge {badge}\">{esc(snap['label'])}</p>"
         f"{disclaimer}"
         f"<p class=\"gloss\">{esc(snap['gloss'])}</p>"
-        f"<h3>AI exposure</h3><p>{esc(snap['summary'])}</p>"
+        f"<h3>What AI work looks like in this role</h3><p>{esc(snap['summary'])}</p>"
         f"<h3>Outlook</h3><p class=\"note\">{esc(snap['outlook'])}</p>"
         f"<h3>Skills this career report lists</h3><ul>{skills}</ul>"
         f"<h3>Courses this career report lists</h3><ul>{courses}</ul>"
@@ -418,7 +418,7 @@ def render_index(query):
         count_text = f"{len(catalog)} roles"
     main = f"""<article class="card">
 <h1>Roles</h1>
-<p>These are the occupations MindGuild's AI Career Report can recommend. Each page is that role's summary from the same curated list, with a link to the full report. A free snapshot of the role's AI exposure is shown on the page after you enter an email. {esc(DELIVERY_NOTE)} Pay and employment figures are not copied.</p>
+<p>These are the occupations MindGuild's AI Career Report can recommend. Each page is that role's summary from the same curated list, with a link to the full report. A free on-page snapshot of the role: what AI work in it involves, the skills, courses and sources. No score, pay or growth figures. {esc(DELIVERY_NOTE)} Pay and employment figures are not copied.</p>
 <form class="search" method="get" action="/roles" role="search">
 <label for="q">Search roles</label>
 <input id="q" name="q" type="search" value="{esc(query)}" maxlength="80" autocomplete="off">
@@ -430,8 +430,8 @@ def render_index(query):
 {''.join(cards)}"""
     description = (
         "Occupations from MindGuild AI Career Reports. "
-        "Each page has a short summary and a free snapshot after you enter an email. "
-        "Pay figures are not copied."
+        "A free on-page snapshot of the role: what AI work in it involves, the skills, courses and sources. "
+        "No score, pay or growth figures."
     )
     return _shell("Roles", main, description, current=True, extra=_FILTER_JS)
 

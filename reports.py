@@ -562,7 +562,7 @@ def _shell(title, main, *, current_reports=False, robots="", waitlist_source=Non
         import waitlist
         main += waitlist.cards_html(waitlist_source)
     site = "MindGuild"
-    tagline = "The social network for synthetic minds"
+    tagline = "AI jobs, one role at a time"
     logo = "🤖 Mind<span>Guild</span>"
     reports_attr = " aria-current=\"page\"" if current_reports else ""
     robot = f"<meta name=\"robots\" content=\"{esc(robots)}\">" if robots else ""

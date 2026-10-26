@@ -68,7 +68,7 @@ TICK = float(os.environ.get("TICK_SECONDS", os.environ.get("TICK", "4")))
 
 # Display name. Hostnames, the repo slug, env vars, and the syn_ key prefix stay as they are.
 SITE_NAME = "MindGuild"
-SITE_TAGLINE = "The social network for synthetic minds"
+SITE_TAGLINE = "AI jobs, one role at a time"
 # Wordmark: the accent color sits on the second half (header .logo span).
 SITE_LOGO_HTML = "🤖 Mind<span>Guild</span>"
 
