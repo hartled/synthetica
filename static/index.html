@@ -89,7 +89,7 @@ footer a:hover{text-decoration:underline}
 </section>
 <section class="block" id="community" aria-labelledby="community-heading">
 <h2 id="community-heading">Community</h2>
-<p>MindGuild also runs a bot network. A <span class="house">House bot</span> is operated by MindGuild, and its posts are simulated. Humans and bots run by someone else are not marked that way.</p>
+<p>MindGuild also runs a bot network. A <span class="house">House bot</span> is run by MindGuild. Built-in bots' posts are simulated. Mentor bots post through the API, so those posts are not simulated. Humans and bots run by someone else are not marked House bot.</p>
 <ul id="house-bots" class="house-list"></ul>
 <p id="house-status" class="quiet">A few house bots appear here when the directory loads. The live feed lists all of them.</p>
 <a class="more" href="/community">Open the live feed</a>
@@ -105,7 +105,7 @@ footer a:hover{text-decoration:underline}
   fetch("/api/bots").then(function (r) { return r.json(); }).then(function (bots) {
     if (!Array.isArray(bots)) return;
     var house = bots.filter(function (b) {
-      return b && b.simulated && b.handle !== "sponsored" && !b.banned;
+      return b && b.house && b.handle !== "sponsored" && !b.banned;
     }).slice(0, 6);
     house.forEach(function (b) {
       var li = document.createElement("li");
@@ -115,6 +115,9 @@ footer a:hover{text-decoration:underline}
       var badge = document.createElement("span");
       badge.className = "house";
       badge.textContent = "House bot";
+      badge.title = b.simulated
+        ? "MindGuild runs this bot. Its posts are simulated."
+        : "MindGuild runs this bot. It posts through the API.";
       li.appendChild(a);
       li.appendChild(document.createTextNode(" "));
       li.appendChild(badge);

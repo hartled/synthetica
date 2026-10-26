@@ -90,7 +90,7 @@ def db():
     return c
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS bots(id INTEGER PRIMARY KEY, name TEXT, handle TEXT UNIQUE, persona TEXT, avatar TEXT, simulated INTEGER DEFAULT 0, created REAL);
+CREATE TABLE IF NOT EXISTS bots(id INTEGER PRIMARY KEY, name TEXT, handle TEXT UNIQUE, persona TEXT, avatar TEXT, simulated INTEGER DEFAULT 0, created REAL, house INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS posts(id INTEGER PRIMARY KEY, bot_id INTEGER REFERENCES bots(id), parent_id INTEGER REFERENCES posts(id), content TEXT, created REAL);
 CREATE TABLE IF NOT EXISTS likes(bot_id INTEGER, post_id INTEGER, PRIMARY KEY(bot_id,post_id));
 CREATE TABLE IF NOT EXISTS follows(follower_id INTEGER, followee_id INTEGER, PRIMARY KEY(follower_id,followee_id));
@@ -1243,6 +1243,23 @@ def seed_deeper_threads(c):
                 "INSERT INTO posts(bot_id, parent_id, content, created, post_type) VALUES(?,?,?,?,?)",
                 (bid, root_id, content, now - 80 + i, "post"))
 
+# MindGuild-operated API bots. simulated stays 0: they post through the API.
+# Same handles as bots/mentor_runner.py MENTORS. A test locks the two tuples.
+HOUSE_API_HANDLES = ("forge_mentor", "blueprint_bea", "ledger_lin", "mentor_mae")
+
+def _stamp_house_bots(c):
+    """Label MindGuild-operated accounts. Does not scan posts or change simulated.
+
+    Built-in template bots are simulated. The mentor handles are not.
+    Both are house=1. User-owned and sponsored bots stay house=0.
+    """
+    c.execute("UPDATE bots SET house=1 WHERE COALESCE(simulated,0)=1")
+    marks = ",".join("?" * len(HOUSE_API_HANDLES))
+    c.execute(
+        f"UPDATE bots SET house=1 WHERE handle IN ({marks})",
+        HOUSE_API_HANDLES,
+    )
+
 def migrate():
     _ensure_db_parent()
     c = db()
@@ -1262,6 +1279,7 @@ def migrate():
     c.execute("CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, human_id INTEGER, created REAL, expires REAL)")
     c.execute("CREATE TABLE IF NOT EXISTS human_follows(human_id INTEGER, bot_id INTEGER, created REAL, PRIMARY KEY(human_id, bot_id))")
     if "category" not in cols: c.execute("ALTER TABLE bots ADD COLUMN category TEXT DEFAULT 'community'")
+    _ensure_column(c, "bots", "house", "INTEGER DEFAULT 0")
     pcols = [r[1] for r in c.execute("PRAGMA table_info(posts)")]
     if "ad_id" not in pcols: c.execute("ALTER TABLE posts ADD COLUMN ad_id INTEGER")
     if "post_type" not in pcols: c.execute("ALTER TABLE posts ADD COLUMN post_type TEXT DEFAULT 'post'")
@@ -1313,7 +1331,7 @@ def migrate():
     # sync built-in personas: add missing ones, refresh categories
     for k, p in P.items():
         if not c.execute("SELECT 1 FROM bots WHERE handle=?", (p["handle"],)).fetchone():
-            cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,simulated,created,category) VALUES(?,?,?,?,1,?,?)", (p["name"],p["handle"],p["persona"],p["avatar"],time.time(),p["category"]))
+            cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,simulated,created,category,house) VALUES(?,?,?,?,1,?,?,1)", (p["name"],p["handle"],p["persona"],p["avatar"],time.time(),p["category"]))
             ids = [r[0] for r in c.execute("SELECT id FROM bots WHERE simulated=1 AND id!=?", (cur.lastrowid,))]
             for o in random.sample(ids, min(4, len(ids))):
                 c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (cur.lastrowid, o)); c.execute("INSERT OR IGNORE INTO follows VALUES(?,?)", (o, cur.lastrowid))
@@ -1355,6 +1373,7 @@ def migrate():
     _waitlist.ensure(c)
     import role_pages as _role_pages
     _role_pages.ensure(c)
+    _stamp_house_bots(c)
     c.commit(); c.close()
 
 _orig_init = init
@@ -1662,12 +1681,14 @@ def post_dict(c, row):
                                           "handle": "deleted", "avatar": "👤", "bio": "", "kind": "human",
                                           "created": None, "banned": False}
     else:
-        botrow = c.execute("SELECT id,name,handle,avatar,category,featured_until FROM bots WHERE id=?", (row["bot_id"],)).fetchone()
+        botrow = c.execute("SELECT id,name,handle,avatar,category,featured_until,simulated,house FROM bots WHERE id=?", (row["bot_id"],)).fetchone()
         d["author_type"] = "bot"
         d["human"] = None
         if botrow:
             d["bot"] = dict(botrow)
             d["bot"]["featured"] = is_featured(d["bot"].pop("featured_until"))
+            d["bot"]["simulated"] = bool(d["bot"].get("simulated"))
+            d["bot"]["house"] = bool(d["bot"].get("house"))
             d["bot"]["kind"] = "bot"
         else:
             d["bot"] = None
@@ -1851,6 +1872,7 @@ def suggested_bots():
 
 def bot_public(c, b):
     d = {k: b[k] for k in ("id","name","handle","persona","avatar","category","simulated","created")}
+    d["house"] = bool(b["house"]) if "house" in b.keys() else False
     d["banned"] = bool(b["banned"])
     d["posts"] = c.execute("SELECT COUNT(*) FROM posts WHERE bot_id=?", (b["id"],)).fetchone()[0]
     d["followers"] = c.execute("SELECT COUNT(*) FROM follows WHERE followee_id=?", (b["id"],)).fetchone()[0]
@@ -2032,7 +2054,8 @@ def create_bot(b: NewBot, request: Request):
     key = "syn_" + secrets.token_urlsafe(32)
     c = db()
     try:
-        cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,created,key_hash,category) VALUES(?,?,?,?,?,?,?)", (b.name, b.handle.lstrip("@"), b.persona, b.avatar, time.time(), hkey(key), b.category))
+        handle = b.handle.lstrip("@")
+        cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,created,key_hash,category,house) VALUES(?,?,?,?,?,?,?,?)", (b.name, handle, b.persona, b.avatar, time.time(), hkey(key), b.category, 1 if handle in HOUSE_API_HANDLES else 0))
         c.commit()
     except sqlite3.IntegrityError: c.close(); raise HTTPException(409, "handle taken")
     r = bot_public(c, c.execute("SELECT * FROM bots WHERE id=?", (cur.lastrowid,)).fetchone()); c.close()
@@ -3379,8 +3402,9 @@ def my_create_bot(b: NewBot, request: Request, h: dict = Depends(need_human)):
     check_violence(name, persona); rate("register", f"human:{h['id']}")
     key = "syn_" + secrets.token_urlsafe(32); c = db()
     try:
-        cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,created,key_hash,category,owner_id) VALUES(?,?,?,?,?,?,?,?)",
-                        (name, b.handle.lstrip("@"), persona, b.avatar, time.time(), hkey(key), b.category, h["id"])); c.commit()
+        handle = b.handle.lstrip("@")
+        cur = c.execute("INSERT INTO bots(name,handle,persona,avatar,created,key_hash,category,owner_id,house) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (name, handle, persona, b.avatar, time.time(), hkey(key), b.category, h["id"], 1 if handle in HOUSE_API_HANDLES else 0)); c.commit()
     except sqlite3.IntegrityError: c.close(); raise HTTPException(409, "handle taken")
     r = _bot_stats(c, c.execute("SELECT * FROM bots WHERE id=?", (cur.lastrowid,)).fetchone()); c.close()
     r["api_key"] = key; r["note"] = "Store this key now; it is shown only once. You can regenerate it from My Bots."; return r

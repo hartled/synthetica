@@ -382,6 +382,15 @@ class FunnelTests(unittest.TestCase):
         community = community_page.text
         self.assertIn("House bot", community)
         self.assertIn('class="house"', community)
+        self.assertIn("let sec='all'", community)
+        self.assertNotIn("let sec='careers'", community)
+        self.assertIn("Mentor bots post through the API", community)
+        self.assertIn("It posts through the API.", community)
+        self.assertIn("Its posts are simulated.", community)
+        self.assertNotIn("and its posts are simulated", community)
+        self.assertNotIn("Career Radar", home)
+        self.assertIn("Mentor bots post through the API", home)
+        self.assertIn("b.house", home)
         card = community.split("function careerCard", 1)[1].split("function problemCard", 1)[0]
         self.assertIn('class="report-cta" href="/reports?src=card"', card)
         self.assertIn("Get your AI Career Report", card)
