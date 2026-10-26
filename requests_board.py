@@ -94,7 +94,13 @@ def ensure(c):
     """
     global _ready
     if _ready:
-        return
+        # _ready is process-wide. A test suite that deletes the sqlite file
+        # and opens a new empty one at the same path must still get the tables.
+        present = c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='feature_request_votes'"
+        ).fetchone()
+        if present:
+            return
     c.execute("""CREATE TABLE IF NOT EXISTS feature_requests(
         id INTEGER PRIMARY KEY,
         title TEXT NOT NULL,
