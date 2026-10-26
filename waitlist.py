@@ -124,6 +124,8 @@ def ensure(c):
         """CREATE INDEX IF NOT EXISTS ix_product_waitlist_breakdown
            ON product_waitlist(product, price_usd, source)"""
     )
+    import traffic
+    traffic.ensure_utm_columns(c, "product_waitlist")
     if _has_table(c, "pro_waitlist"):
         c.execute(
             """INSERT OR IGNORE INTO product_waitlist(email, product, price_usd, source, created)
@@ -184,11 +186,13 @@ def _reject_honeypot(value):
         raise HTTPException(422, "Could not join the waitlist.")
 
 
-def _store(email, product, price, source):
+def _store(email, product, price, source, utm=None):
     import app as appmod
     import funnel
+    import traffic
 
     now = time.time()
+    stored = traffic.column_values(utm)
     created_pro = False
     c = appmod.db()
     try:
@@ -200,15 +204,17 @@ def _store(email, product, price, source):
             )
             created_pro = cur.rowcount == 1
         c.execute(
-            """INSERT OR IGNORE INTO product_waitlist(email, product, price_usd, source, created)
-               VALUES(?, ?, ?, ?, ?)""",
-            (email, product, price, source, now),
+            """INSERT OR IGNORE INTO product_waitlist(
+                   email, product, price_usd, source, created,
+                   utm_source, utm_medium, utm_campaign, utm_content)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (email, product, price, source, now, *stored),
         )
         c.commit()
     finally:
         c.close()
     if created_pro:
-        funnel.record_event("pro_waitlist_signup")
+        funnel.record_event("pro_waitlist_signup", utm=utm)
 
 
 async def submit(request: Request, product=None):
@@ -227,7 +233,13 @@ async def submit(request: Request, product=None):
     email = _email(data.get("email"))
     price = _price(chosen, data)
     source = _source(data.get("source"))
-    _store(email, chosen, price, source)
+    utm = None
+    try:
+        import traffic
+        utm = traffic.parts_from(request, data)
+    except Exception:
+        utm = None
+    _store(email, chosen, price, source, utm)
     return {"ok": True}
 
 
@@ -296,7 +308,7 @@ def _card(product, source):
             "element_id": "waitlist-career-radar",
             "ok": "You're on the Career Radar waitlist. No charge was made.",
             "body": "A monthly tracker of AI-related roles. Career Radar is not built yet.",
-            "price": "The price being tested is $12-29/mo ($12, $19, or $29 per month).",
+            "price": "Career Radar only: the price being tested is $12-29/mo ($12, $19, or $29 per month).",
         },
     }[product]
     email_id = "wl-email-" + product
@@ -316,6 +328,7 @@ def _card(product, source):
 <label for="{esc(site_id)}">Website</label>
 <input id="{esc(site_id)}" name="website" type="text" tabindex="-1" autocomplete="off">
 </div>
+{__import__('traffic').hidden_inputs()}
 <button class="btn" type="submit">Join the waitlist</button>
 <p class="wl-msg" role="status" aria-live="polite"></p>
 </form>
@@ -334,6 +347,7 @@ def cards_html(source):
     for product in PRODUCTS:
         parts.append(_card(product, source))
     parts.append("</section>")
+    parts.append('<script src="/utm.js" defer></script>')
     parts.append('<script src="/waitlist.js" defer></script>')
     return "".join(parts)
 

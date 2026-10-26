@@ -106,7 +106,10 @@ class FunnelTests(unittest.TestCase):
             ).fetchone()[0]
         finally:
             c.close()
-        self.assertEqual(cols, ["id", "ts", "event", "src", "report_id"])
+        self.assertEqual(cols, [
+            "id", "ts", "event", "src", "report_id",
+            "utm_source", "utm_medium", "utm_campaign", "utm_content",
+        ])
         self.assertNotIn("NOT NULL", sql.split("report_id")[1])
         blob = sql.lower()
         for banned in ("ip", "cookie", "user_agent", "email", "user-agent"):
