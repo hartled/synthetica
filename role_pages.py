@@ -127,6 +127,8 @@ def ensure(c):
         """CREATE INDEX IF NOT EXISTS ix_role_snapshot_role
            ON role_snapshot_signups(role_id, created)"""
     )
+    import traffic
+    traffic.ensure_utm_columns(c, "role_snapshot_signups")
 
 
 def _email(value):
@@ -214,18 +216,22 @@ def snapshot_for(entry):
     }
 
 
-def _store(email, role_id, source):
+def _store(email, role_id, source, utm=None):
     import time
     import app as appmod
+    import traffic
 
     now = time.time()
+    stored = traffic.column_values(utm)
     c = appmod.db()
     try:
         ensure(c)
         cur = c.execute(
-            """INSERT OR IGNORE INTO role_snapshot_signups(email, role_id, source, created)
-               VALUES(?, ?, ?, ?)""",
-            (email, role_id, source, now),
+            """INSERT OR IGNORE INTO role_snapshot_signups(
+                   email, role_id, source, created,
+                   utm_source, utm_medium, utm_campaign, utm_content)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
+            (email, role_id, source, now, *stored),
         )
         created = cur.rowcount == 1
         c.commit()
@@ -250,11 +256,17 @@ async def _body(request: Request):
     return {key: values[-1] for key, values in parsed.items()}, "form"
 
 
-def _take_signup(data, entry):
+def _take_signup(data, entry, request=None):
     _reject_honeypot(data.get("website"))
     email = _email(data.get("email"))
     source = clean_source(data.get("source") if data.get("source") not in (None, "") else data.get("src"))
-    created = _store(email, entry["id"], source)
+    utm = None
+    try:
+        import traffic
+        utm = traffic.parts_from(request, data)
+    except Exception:
+        utm = None
+    created = _store(email, entry["id"], source, utm)
     return email, created, snapshot_for(entry)
 
 
@@ -319,6 +331,7 @@ footer{{overflow-wrap:anywhere}}
 <nav aria-label="Site"><a href="/roles"{mark}>Roles</a><a href="/reports">Reports</a><a href="/requests">Requests</a><a href="/pricing">Pricing</a><a href="/community">Community</a></nav></header>
 <main id="main" tabindex="-1">{main}</main>
 <footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/roles">Roles</a> · <a href="/docs">API docs</a> · <a href="/reports">Career reports</a> · <a href="/refunds">Refunds</a> · <a href="/community">Community</a> · <a href="/search">Search</a> · <a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/messages">Messages</a> · <a href="/me/bots">My Bots</a></footer>
+<script src="/utm.js" defer></script>
 {extra}</body></html>"""
 
 
@@ -374,6 +387,7 @@ def _signup_form(entry, source, error=""):
 <input id="website" name="website" type="text" tabindex="-1" autocomplete="off">
 </div>
 <input type="hidden" name="source" value="{esc(source)}">
+{__import__('traffic').hidden_inputs()}
 <button class="btn" type="submit">Show my free snapshot</button>
 {err}
 </form>
@@ -572,7 +586,7 @@ def register(application):
         appmod.rate("role_snapshot", appmod.client_ip(request))
         data, kind = await _body(request)
         try:
-            _email_value, created, snap = _take_signup(data, entry)
+            _email_value, created, snap = _take_signup(data, entry, request)
         except HTTPException as exc:
             if kind == "json":
                 raise
@@ -601,7 +615,7 @@ def register(application):
         data, _kind = await _body(request)
         if not isinstance(data, dict):
             raise HTTPException(422, "Send a JSON object with an email.")
-        _email_value, created, snap = _take_signup(data, entry)
+        _email_value, created, snap = _take_signup(data, entry, request)
         return JSONResponse(
             {"ok": True, "created": created, "snapshot": snap},
             status_code=201 if created else 200,

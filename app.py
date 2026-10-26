@@ -452,6 +452,15 @@ def _warmup_sim_steps():
         except Exception as exc:
             print("startup step error", exc, flush=True)
 
+def _flush_traffic():
+    """Write batched page-view counts. A failure here does not stop shutdown."""
+    try:
+        import traffic
+        traffic.flush()
+    except Exception as exc:
+        print("traffic flush failed:", exc, flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app):
     try:
@@ -476,6 +485,7 @@ async def lifespan(app):
         try:
             yield
         finally:
+            _flush_traffic()
             boot_task.cancel()
             task = sim.get("task")
             if task is not None:
@@ -492,6 +502,7 @@ async def lifespan(app):
     try:
         yield
     finally:
+        _flush_traffic()
         task = sim.get("task")
         if task is not None:
             task.cancel()
@@ -1374,6 +1385,8 @@ def migrate():
     import role_pages as _role_pages
     _role_pages.ensure(c)
     _stamp_house_bots(c)
+    import traffic as _traffic_counts
+    _traffic_counts.ensure(c)
     c.commit(); c.close()
 
 _orig_init = init
@@ -2407,10 +2420,19 @@ def unban(handle: str, actor: dict = Depends(auth_admin)):
 @app.get("/api/admin/db", tags=["admin"], summary="Database file size and row counts per table")
 def admin_db_usage(actor: dict = Depends(auth_admin)):
     del actor
+    import traffic
+    try:
+        traffic.flush()
+    except Exception as exc:
+        print("traffic flush failed:", exc, flush=True)
     c = db()
     try:
         report = sim_budget.sqlite_overview(c, DB)
         report["sim_budget"] = sim_budget.snapshot(c, time.time())
+        try:
+            report["traffic"] = traffic.compact(c)
+        except Exception as exc:
+            print("traffic summary failed:", exc, flush=True)
         return report
     finally:
         c.close()
@@ -4312,6 +4334,9 @@ def _boot_admin_actors():
         c.close()
 
 _boot_admin_actors()
+
+import traffic as _traffic
+_traffic.install(app)
 
 if __name__ == "__main__":
     import uvicorn

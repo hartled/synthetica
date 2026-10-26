@@ -20,6 +20,12 @@
         website: websiteEl ? websiteEl.value : ""
       };
       if (picked && picked.value) body.price_usd = Number(picked.value);
+      var utm = window.__mgUtm || {};
+      ["utm_source", "utm_medium", "utm_campaign", "utm_content"].forEach(function (name) {
+        var input = form.querySelector('input[name="' + name + '"]');
+        var value = input && input.value ? input.value : (utm[name] || "");
+        if (/^[A-Za-z0-9._~-]{1,64}$/.test(value)) body[name] = value;
+      });
       if (button) button.disabled = true;
       fetch("/api/waitlist", {
         method: "POST",

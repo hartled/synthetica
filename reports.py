@@ -618,6 +618,7 @@ footer{{overflow-wrap:anywhere}}
 <nav aria-label="Site"><a href="/roles">Roles</a><a href="/reports"{reports_attr}>Reports</a><a href="/requests">Requests</a><a href="/pricing">Pricing</a><a href="/community">Community</a></nav></header>
 <main id="main" tabindex="-1">{main}</main>
 <footer style="text-align:center;color:#c5cce6;font-size:13px;padding:24px 16px 32px"><a href="/rules">Community Rules</a> · <a href="/join">Join</a> · <a href="/partners">Partners</a> · <a href="/pricing">Pricing</a> · <a href="/about">About</a> · <a href="/ads">Ads</a> · <a href="/requests">Requests</a> · <a href="/docs">API docs</a> · <a href="/roles">Roles</a> · <a href="/reports">Career reports</a> · <a href="/refunds">Refunds</a> · <a href="/community">Community</a> · <a href="/search">Search</a> · <a href="/login">Log in</a> · <a href="/signup">Sign up</a> · <a href="/messages">Messages</a> · <a href="/me/bots">My Bots</a></footer>
+<script src="/utm.js" defer></script>
 <script src="/site-search.js" defer></script>
 </body></html>"""
 
@@ -660,6 +661,11 @@ def render_landing(values=None, errors=None, notice=""):
     values = values or {}
     errors = errors or {}
     price = price_display()
+    try:
+        import traffic
+        utm_fields = traffic.hidden_inputs()
+    except Exception:
+        utm_fields = ""
     sample = sample_report()
     first = sample["careers"][0]
     spec = sample["speculative"][0]
@@ -667,12 +673,12 @@ def render_landing(values=None, errors=None, notice=""):
     if pay:
         form = (
             "<h2>Your report</h2>"
-            "<p>Checkout uses Stripe. The amount charged is the Stripe Price plus any applicable tax. "
-            f"The price shown here is {esc(price)} + applicable tax. "
+            f"<p>Checkout uses Stripe. The price is {esc(price)} one time. "
             "The report is created when Stripe sends a paid webhook. The success page opens it if you come back. "
             "The finished report is stored in SQLite on the persistent Render disk at /data and survives redeploy. Download the PDF if you want a copy on your own device.</p>"
             f"{_error_summary(errors)}"
             "<form method=\"post\" action=\"/api/reports/checkout\" novalidate>"
+            + utm_fields
             + _field("current_job", "Current job", values.get("current_job"), errors.get("current_job"), required=True, autocomplete="organization-title")
             + _field("skills", "Skills", values.get("skills"), errors.get("skills"), multiline=True, required=True, hint="Separate skills with commas or new lines.")
             + _field("education", "Education", values.get("education"), errors.get("education"), required=True)
@@ -712,7 +718,7 @@ def render_landing(values=None, errors=None, notice=""):
 <div class="card">
 <h1>AI Career Reports</h1>
 {('<p class="badge testmode" role="status">TEST MODE</p>' if stripe_test_mode() else '')}
-<p class="price">Price <span>{esc(price)} + applicable tax</span> <a href="/refunds">7-day refund policy</a></p>
+<p class="price">Price <span>{esc(price)} one time</span> <a href="/refunds">7-day refund policy</a></p>
 <p>A report maps what you enter onto curated occupations and courses. Nothing in it is written by a paid language model. Salary and employment figures are not copied into the report. When pay exists, the source page is linked and the number stays there.</p>
 <ul>
 <li>Three to five artificial-intelligence-related occupations you can pursue now, each with a Bureau of Labor Statistics or O*NET source, a skills gap against what you entered, concrete next steps, and courses with working links.</li>
@@ -1520,7 +1526,14 @@ def register(application):
             c.commit()
         finally:
             c.close()
-        funnel.record_event("checkout_start", src=request.query_params.get("src"), report_id=token)
+        utm = None
+        try:
+            import traffic
+            utm = traffic.parts_from(request, data)
+            traffic.note_human(request, "checkout", "start", utm)
+        except Exception:
+            print("traffic checkout count failed", flush=True)
+        funnel.record_event("checkout_start", src=request.query_params.get("src"), report_id=token, utm=utm)
         if _wants_html(request, kind):
             body = (
                 "<div class=\"card\"><h1>Continue to checkout</h1>"

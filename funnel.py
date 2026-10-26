@@ -90,7 +90,13 @@ def ensure_table(c):
         ts REAL NOT NULL,
         event TEXT NOT NULL,
         src TEXT,
-        report_id TEXT)""")
+        report_id TEXT,
+        utm_source TEXT,
+        utm_medium TEXT,
+        utm_campaign TEXT,
+        utm_content TEXT)""")
+    import traffic
+    traffic.ensure_utm_columns(c, "funnel_events")
     c.execute("CREATE INDEX IF NOT EXISTS ix_funnel_events_ts ON funnel_events(ts)")
     c.execute("CREATE INDEX IF NOT EXISTS ix_funnel_events_report ON funnel_events(report_id, event)")
     c.execute(
@@ -122,12 +128,13 @@ class FunnelUserAgentMiddleware:
             reset_user_agent(token)
 
 
-def record_event(event, src=None, report_id=None):
+def record_event(event, src=None, report_id=None, utm=None):
     """Store one funnel row. Returns True when a new row was written.
 
     Skips obvious bots. purchase_complete is ignored when that report id
     already has one, so webhook and success-page fulfillment count once.
     A placement purchase has no report id; its src is the Payment Link tier.
+    utm is an optional tuple of sanitized campaign tokens. It is not contact data.
     """
     if is_bot_user_agent(_ua.get()):
         return False
@@ -138,18 +145,23 @@ def record_event(event, src=None, report_id=None):
     if event == "purchase_complete" and not report_id and src not in PLACEMENT_SOURCES:
         return False
     try:
-        return _insert(event, src, report_id)
+        return _insert(event, src, report_id, utm)
     except Exception:
         print("funnel record failed", flush=True)
         return False
 
 
-def _insert(event, src, report_id):
+def _insert(event, src, report_id, utm=None):
     import app as appmod
 
     c = appmod.db()
     try:
         ensure_table(c)
+        try:
+            import traffic
+            stored_utm = traffic.column_values(utm)
+        except Exception:
+            stored_utm = (None, None, None, None)
         if event == "purchase_complete" and src is None:
             prior = c.execute(
                 """SELECT src FROM funnel_events
@@ -161,13 +173,17 @@ def _insert(event, src, report_id):
                 src = clean_src(prior["src"])
         if event == "purchase_complete":
             cur = c.execute(
-                "INSERT OR IGNORE INTO funnel_events(ts, event, src, report_id) VALUES(?,?,?,?)",
-                (time.time(), event, src, report_id),
+                """INSERT OR IGNORE INTO funnel_events(
+                       ts, event, src, report_id, utm_source, utm_medium, utm_campaign, utm_content)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (time.time(), event, src, report_id, *stored_utm),
             )
         else:
             cur = c.execute(
-                "INSERT INTO funnel_events(ts, event, src, report_id) VALUES(?,?,?,?)",
-                (time.time(), event, src, report_id),
+                """INSERT INTO funnel_events(
+                       ts, event, src, report_id, utm_source, utm_medium, utm_campaign, utm_content)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (time.time(), event, src, report_id, *stored_utm),
             )
         c.commit()
         return cur.rowcount == 1

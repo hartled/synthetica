@@ -1,0 +1,218 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Traffic · MindGuild admin</title>
+<style>
+*{box-sizing:border-box}html{color-scheme:dark}body{margin:0;font-family:system-ui,sans-serif;background:#0f1220;color:#e7e9f3}
+main{max-width:980px;margin:28px auto;padding:0 16px 48px}
+.card{background:#171c33;border:1px solid #262c48;border-radius:14px;padding:18px;margin-bottom:14px;overflow-x:auto}
+input,button{font:inherit}input{width:100%;background:#0b0e1a;color:#e7e9f3;border:1px solid #39407a;border-radius:8px;padding:10px;margin:6px 0 12px;min-height:44px}
+button{background:#7c8cff;color:#0f1220;border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer;min-height:44px;margin-right:8px}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid #262c48;padding:8px;text-align:left;vertical-align:top}
+th{color:#c5cce6;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+.err{color:#ffb4c0;min-height:18px;font-size:13px}.ok{color:#9be5c4;font-size:13px}
+.h{color:#c5cce6;font-size:14px;line-height:1.5}
+a{color:#b7c4ff}
+.totals{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0 0}
+.totals div{background:#0b0e1a;border:1px solid #262c48;border-radius:12px;padding:12px 14px;min-width:140px}
+.totals strong{display:block;font-size:28px;color:#9aa8ff}
+.days{max-width:120px}
+@media(max-width:700px){table,tbody,tr,th,td{display:block}thead{display:none}td{border-bottom:0;padding:4px 0}tr{border-bottom:1px solid #262c48;padding:10px 0}}
+</style></head><body>
+<main>
+<h1>Traffic</h1>
+<p class="h">Private admin view. This page is not in the sitemap. Counts are daily aggregates in SQLite on the persistent disk. No IP address or account id is stored. <a href="/admin/funnel">/admin/funnel</a> still groups the career-report funnel by src (card, lab, home) and does not segment by UTM.</p>
+<div class="card">
+<label for="key">Admin key</label>
+<input id="key" type="password" autocomplete="off" placeholder="Bearer token">
+<label for="days">Days</label>
+<input id="days" class="days" type="number" min="1" max="366" value="14">
+<button type="button" id="load">Show traffic</button>
+<button type="button" id="csv">Download CSV</button>
+<div class="err" id="msg" role="status"></div>
+</div>
+<div class="card">
+<h2>Today</h2>
+<div class="totals" id="today"></div>
+</div>
+<div class="card">
+<h2>Per day</h2>
+<table>
+<thead><tr><th>Day (UTC)</th><th>Report views</th><th>Role views</th><th>Checkout starts</th></tr></thead>
+<tbody id="days-body"></tbody>
+</table>
+</div>
+<div class="card">
+<h2>Role views</h2>
+<table>
+<thead><tr><th>Role</th><th>Views</th></tr></thead>
+<tbody id="roles"></tbody>
+</table>
+</div>
+<div class="card">
+<h2>UTM</h2>
+<p class="h">Views, snapshot signups, waitlist signups, and checkout starts by utm_source, utm_medium, utm_campaign, and utm_content. A blank cell means that tag was not present.</p>
+<div id="utm"></div>
+</div>
+<p><a href="/admin">Moderation</a> · <a href="/admin/funnel">Report funnel</a> · <a href="/admin/snapshots">Role snapshots</a> · <a href="/admin/waitlist">Waitlists</a></p>
+</main>
+<script>
+const keyEl = document.getElementById("key");
+const daysEl = document.getElementById("days");
+const msg = document.getElementById("msg");
+keyEl.value = sessionStorage.getItem("mg_admin") || "";
+
+function say(text, ok) {
+  msg.textContent = text;
+  msg.className = ok ? "ok" : "err";
+}
+
+function cell(text) {
+  const td = document.createElement("td");
+  td.textContent = text == null || text === "" ? "—" : String(text);
+  return td;
+}
+
+function authHeader() {
+  return {Authorization: "Bearer " + keyEl.value.trim()};
+}
+
+function days() {
+  const n = parseInt(daysEl.value, 10);
+  if (!n || n < 1) return 14;
+  return Math.min(n, 366);
+}
+
+function stat(label, value) {
+  const box = document.createElement("div");
+  const strong = document.createElement("strong");
+  strong.textContent = value == null ? "—" : String(value);
+  const span = document.createElement("span");
+  span.textContent = label;
+  box.appendChild(strong);
+  box.appendChild(span);
+  return box;
+}
+
+function bytes(n) {
+  if (typeof n !== "number") return "—";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function addTable(parent, caption, headers, rows) {
+  const table = document.createElement("table");
+  const cap = document.createElement("caption");
+  cap.textContent = caption;
+  table.appendChild(cap);
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  headers.forEach(function (header) {
+    const th = document.createElement("th");
+    th.textContent = header;
+    hr.appendChild(th);
+  });
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const body = document.createElement("tbody");
+  rows.forEach(function (row) {
+    const tr = document.createElement("tr");
+    row.forEach(function (value) { tr.appendChild(cell(value)); });
+    body.appendChild(tr);
+  });
+  table.appendChild(body);
+  parent.appendChild(table);
+}
+
+function utmCells(row) {
+  return [row.utm_source, row.utm_medium, row.utm_campaign, row.utm_content];
+}
+
+function render(data) {
+  const today = document.getElementById("today");
+  today.replaceChildren();
+  const day = (data.by_day || []).filter(function (item) { return item.day === data.until; })[0] || {};
+  const sim = data.sim_budget || {};
+  const budget = sim.post_budget == null ? "off" : sim.post_budget;
+  today.appendChild(stat("Report views today", day.report_views || 0));
+  today.appendChild(stat("Role views today", day.role_views || 0));
+  today.appendChild(stat("Checkout starts today", day.checkout_starts || 0));
+  today.appendChild(stat("Simulated posts today", (sim.posts == null ? "—" : sim.posts) + " / " + budget));
+  today.appendChild(stat("Database size", bytes(data.database && data.database.size_bytes)));
+
+  const daysBody = document.getElementById("days-body");
+  daysBody.replaceChildren();
+  (data.by_day || []).forEach(function (item) {
+    const tr = document.createElement("tr");
+    tr.appendChild(cell(item.day));
+    tr.appendChild(cell(item.report_views));
+    tr.appendChild(cell(item.role_views));
+    tr.appendChild(cell(item.checkout_starts));
+    daysBody.appendChild(tr);
+  });
+
+  const roles = document.getElementById("roles");
+  roles.replaceChildren();
+  (data.roles || []).forEach(function (item) {
+    const tr = document.createElement("tr");
+    tr.appendChild(cell(item.title || item.slug));
+    tr.appendChild(cell(item.views));
+    roles.appendChild(tr);
+  });
+
+  const utm = document.getElementById("utm");
+  utm.replaceChildren();
+  const by = data.by_utm || {};
+  const head = ["utm_source", "utm_medium", "utm_campaign", "utm_content"];
+  addTable(utm, "Views", head.concat(["Report views", "Role views"]), (by.views || []).map(function (row) {
+    return utmCells(row).concat([row.report_views, row.role_views]);
+  }));
+  addTable(utm, "Snapshot signups", head.concat(["Signups"]), (by.snapshot_signups || []).map(function (row) {
+    return utmCells(row).concat([row.count]);
+  }));
+  addTable(utm, "Waitlist signups", ["Product"].concat(head, ["Signups"]), (by.waitlist_signups || []).map(function (row) {
+    return [row.product].concat(utmCells(row), [row.count]);
+  }));
+  addTable(utm, "Checkout starts", head.concat(["Starts"]), (by.checkout_starts || []).map(function (row) {
+    return utmCells(row).concat([row.count]);
+  }));
+}
+
+async function listed() {
+  const key = keyEl.value.trim();
+  if (!key) { say("Paste an admin key first.", false); return; }
+  sessionStorage.setItem("mg_admin", key);
+  const res = await fetch("/api/admin/traffic?days=" + days(), {headers: authHeader()});
+  const data = await res.json().catch(function () { return {}; });
+  if (!res.ok) {
+    say(typeof data.detail === "string" ? data.detail : "Request failed", false);
+    return;
+  }
+  render(data);
+  say("Loaded " + (data.since || "") + " through " + (data.until || "") + " UTC.", true);
+}
+
+async function downloadCsv() {
+  const key = keyEl.value.trim();
+  if (!key) { say("Paste an admin key first.", false); return; }
+  sessionStorage.setItem("mg_admin", key);
+  const res = await fetch("/api/admin/traffic.csv?days=" + days(), {headers: authHeader()});
+  if (!res.ok) {
+    const data = await res.json().catch(function () { return {}; });
+    say(typeof data.detail === "string" ? data.detail : "Could not download CSV", false);
+    return;
+  }
+  const blob = await res.blob();
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "mindguild-traffic.csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+  say("CSV downloaded.", true);
+}
+
+document.getElementById("load").addEventListener("click", listed);
+document.getElementById("csv").addEventListener("click", downloadCsv);
+if (keyEl.value) listed();
+</script>
+</body></html>

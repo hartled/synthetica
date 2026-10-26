@@ -2,7 +2,7 @@
 
 Career reports use hosted Stripe Checkout. Fulfillment is `POST /api/stripe/webhook`. `/reports/success` is only a fallback: it retrieves the same Checkout Session and calls the same unlock function. Do not create Stripe objects from the app server. Product, Price, Tax, and the webhook endpoint are set in the Dashboard or by hand.
 
-The displayed price is **$19 + applicable tax**. The test Price `price_1UQxCEB7BW932uzpX0jPU9Qc` is `tax_behavior=exclusive` (USD 1900¢ plus tax). The test product `prod_VRqtLyZ8CSTcF5` uses tax code `txcd_10701411` (Electronically Delivered Information Services - Personal Use). That product has already been updated.
+The page shows **$19 one time**. Stripe Checkout adds applicable tax. The test Price `price_1UQxCEB7BW932uzpX0jPU9Qc` is `tax_behavior=exclusive` (USD 1900¢ plus tax). The test product `prod_VRqtLyZ8CSTcF5` uses tax code `txcd_10701411` (Electronically Delivered Information Services - Personal Use). That product has already been updated.
 
 ## Environment variables
 
@@ -12,7 +12,7 @@ The displayed price is **$19 + applicable tax**. The test Price `price_1UQxCEB7B
 | `STRIPE_PRICE_ID` | `price_1UQxCEB7BW932uzpX0jPU9Qc` | A **live** Price. Never reuse the test Price id. |
 | `STRIPE_WEBHOOK_SECRET` | Optional. Needed to verify the webhook. | **Required.** Checkout stays off until this is set. |
 | `STRIPE_CHECKOUT_CUSTOM_TEXT` | Leave unset. `1`, `true`, or `yes` adds the refund sentence to the Checkout submit button. | Leave unset. Managed Payments rejects `custom_text`. |
-| `REPORT_PRICE_DISPLAY` | Optional label. Default `$19`. The page adds “+ applicable tax”. | Same. This text is not what Stripe charges. |
+| `REPORT_PRICE_DISPLAY` | Optional label. Default `$19`. The page shows that amount as one time. | Same. This text is not what Stripe charges. |
 | `REPORT_FROM_EMAIL` | Optional. From address for the report link. | Same. |
 | `RESEND_API_KEY` | Optional. If this and `REPORT_FROM_EMAIL` are set, the link is emailed via Resend. | Same. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Optional alternative to Resend. `SMTP_PORT` defaults to 587. | Same. |
@@ -90,7 +90,7 @@ The public policy is on `/refunds`: if a report is wrong or was not delivered, t
 
 ## Verification checklist
 
-- [ ] Test key, test Price, and test webhook secret are set. The `/reports` page shows TEST MODE and “$19 + applicable tax”.
+- [ ] Test key, test Price, and test webhook secret are set. The `/reports` page shows TEST MODE and “$19 one time”.
 - [ ] Pay with `4242…`. The webhook creates the report even if the browser never opens `/reports/success`.
 - [ ] Opening `/reports/success?session_id=…` shows **Open your report**. A second visit does not create a second report.
 - [ ] An unpaid `checkout.session.completed` does not unlock the report. `checkout.session.async_payment_succeeded` does.
