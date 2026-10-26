@@ -92,6 +92,14 @@ class RoleSnapshotTests(unittest.TestCase):
         self.assertNotIn("Synthetica", index.text)
         self.assertIn('href="/reports"', index.text)
         self.assertIn("No email is sent", index.text)
+        self.assertIn(
+            "A free on-page snapshot of the role: what AI work in it involves, "
+            "the skills, courses and sources. No score, pay or growth figures.",
+            index.text,
+        )
+        self.assertIn("AI jobs, one role at a time", index.text)
+        self.assertNotIn("AI exposure", index.text)
+        self.assertNotIn("The social network for synthetic minds", index.text)
         self.assertIn('method="get"', index.text)
         self.assertIn('name="q"', index.text)
         for entry in career_data.REAL_CAREERS:
@@ -106,6 +114,8 @@ class RoleSnapshotTests(unittest.TestCase):
             self.assertIn('href="/reports"', page.text)
             self.assertIn('name="website"', page.text)
             self.assertIn("No email is sent", page.text)
+            self.assertIn("AI jobs, one role at a time", page.text)
+            self.assertNotIn("The social network for synthetic minds", page.text)
             self.assertNotIn('id="snapshot"', page.text)
             self.assertNotIn("Your free snapshot", page.text)
         missing = self.client.get("/roles/" + speculative[0])
@@ -137,6 +147,8 @@ class RoleSnapshotTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200, first.text[:400])
         self.assertIn('id="snapshot"', first.text)
         self.assertIn("Your free snapshot", first.text)
+        self.assertIn("What AI work looks like in this role", first.text)
+        self.assertNotIn("AI exposure", first.text)
         self.assertIn("Established", first.text)
         self.assertIn("Skills this career report lists", first.text)
         self.assertIn("Python", first.text)
@@ -169,6 +181,7 @@ class RoleSnapshotTests(unittest.TestCase):
         self.assertEqual(body["snapshot"]["title"], "Statistician")
         stat = next(entry for entry in career_data.REAL_CAREERS if entry["id"] == "statistician")
         self.assertEqual(body["snapshot"]["summary"], stat["summary"])
+        self.assertNotIn("exposure", body["snapshot"])
         self.assertNotIn("%", body["snapshot"]["outlook"])
         self.assertEqual(self._count("SELECT COUNT(*) FROM role_snapshot_signups"), 2)
         emerging = self.client.post(
